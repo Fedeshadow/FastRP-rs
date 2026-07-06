@@ -14,7 +14,8 @@ pub fn initialize_h0(num_nodes: usize, dim: usize, seed: Option<u64>) -> Result<
     let mut vec = Vec::new();
     vec.try_reserve_exact(capacity)?;
     vec.resize(capacity, 0.0);
-    let mut h0 = Array2::from_shape_vec((num_nodes, dim), vec).unwrap();
+    let mut h0 = Array2::from_shape_vec((num_nodes, dim), vec)
+        .map_err(|e| FastRPError::ShapeMismatch(e.to_string()))?;
     
     match seed {
         Some(s_val) => {
@@ -58,12 +59,14 @@ pub fn compute_fastrp(
     let mut vec_final = Vec::new();
     vec_final.try_reserve_exact(capacity)?;
     vec_final.resize(capacity, 0.0);
-    let mut final_embeddings = Array2::from_shape_vec((csr.num_nodes, dim), vec_final).unwrap();
+    let mut final_embeddings = Array2::from_shape_vec((csr.num_nodes, dim), vec_final)
+        .map_err(|e| FastRPError::ShapeMismatch(e.to_string()))?;
 
     let mut vec_next = Vec::new();
     vec_next.try_reserve_exact(capacity)?;
     vec_next.resize(capacity, 0.0);
-    let mut h_next_storage = Array2::from_shape_vec((csr.num_nodes, dim), vec_next).unwrap();
+    let mut h_next_storage = Array2::from_shape_vec((csr.num_nodes, dim), vec_next)
+        .map_err(|e| FastRPError::ShapeMismatch(e.to_string()))?;
 
     for &weight in iteration_weights {
         h_next_storage.fill(0.0);

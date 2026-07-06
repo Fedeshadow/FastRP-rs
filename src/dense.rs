@@ -15,7 +15,8 @@ impl DenseMatrix {
         let mut vec = Vec::new();
         vec.try_reserve_exact(capacity)?;
         vec.resize(capacity, 0.0);
-        let mut adj_matrix = Array2::from_shape_vec((num_nodes, num_nodes), vec).unwrap();
+        let mut adj_matrix = Array2::from_shape_vec((num_nodes, num_nodes), vec)
+            .map_err(|e| FastRPError::ShapeMismatch(e.to_string()))?;
         
         for (i, neighbors) in adj_list.into_iter().enumerate() {
             let degree = neighbors.len() as f64;
@@ -41,7 +42,8 @@ pub fn compute_fastrp_dense(
     let mut vec_final = Vec::new();
     vec_final.try_reserve_exact(capacity)?;
     vec_final.resize(capacity, 0.0);
-    let mut final_embeddings = Array2::from_shape_vec((dense.num_nodes, dim), vec_final).unwrap();
+    let mut final_embeddings = Array2::from_shape_vec((dense.num_nodes, dim), vec_final)
+        .map_err(|e| FastRPError::ShapeMismatch(e.to_string()))?;
 
     for &weight in iteration_weights {
         let h_next = dense.adj_matrix.dot(&h_curr);
