@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use numpy::{PyArray2, PyReadonlyArray2, IntoPyArray};
+use numpy::{PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
 use fastrp::FastRPBuilder;
 
 #[pyfunction]
@@ -20,9 +20,11 @@ fn fit_dense<'py>(
         builder
     };
 
-    let result = builder.fit_dense(&adj_matrix_owned)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    
+    let result = py.detach(|| {
+        builder.fit_dense(&adj_matrix_owned)
+    })
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
     Ok(result.into_pyarray(py))
 }
 
@@ -30,14 +32,27 @@ fn fit_dense<'py>(
 #[pyo3(signature = (row_ptrs, col_indices, values, num_nodes, dim, weights, seed=None))]
 fn fit_csr<'py>(
     py: Python<'py>,
-    row_ptrs: Vec<usize>,
-    col_indices: Vec<usize>,
-    values: Vec<f64>,
+    row_ptrs: PyReadonlyArray1<'py, i64>,
+    col_indices: PyReadonlyArray1<'py, i64>,
+    values: PyReadonlyArray1<'py, f64>,
     num_nodes: usize,
     dim: usize,
     weights: Vec<f64>,
     seed: Option<u64>,
 ) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    // Borrow numpy buffers as slices — zero-copy, no Python object protocol
+    let rp = row_ptrs.as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("row_ptrs must be contiguous: {e}")))?;
+    let ci = col_indices.as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("col_indices must be contiguous: {e}")))?;
+    let vals = values.as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("values must be contiguous: {e}")))?;
+
+    // Single native Rust loop: i64 → usize. No Python object overhead.
+    let row_ptrs_vec: Vec<usize> = rp.iter().map(|&x| x as usize).collect();
+    let col_indices_vec: Vec<usize> = ci.iter().map(|&x| x as usize).collect();
+    let values_vec: Vec<f64> = vals.to_vec();
+
     let builder = FastRPBuilder::new(dim)
         .with_weights(weights);
     let builder = if let Some(s) = seed {
@@ -46,32 +61,60 @@ fn fit_csr<'py>(
         builder
     };
 
-    let result = builder.from_csr(row_ptrs, col_indices, values, num_nodes)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    
+    let result = py.detach(|| {
+        builder.from_csr(row_ptrs_vec, col_indices_vec, values_vec, num_nodes)
+    })
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
     Ok(result.into_pyarray(py))
 }
 
 #[pyfunction]
-#[pyo3(signature = (adj_list, dim, weights, seed=None))]
+#[pyo3(signature = (sources, targets, edge_weights, num_nodes, dim, iter_weights, seed=None))]
 fn fit_adj_list<'py>(
     py: Python<'py>,
-    adj_list: Vec<Vec<(usize, f64)>>,
+    sources: PyReadonlyArray1<'py, i64>,
+    targets: PyReadonlyArray1<'py, i64>,
+    edge_weights: PyReadonlyArray1<'py, f64>,
+    num_nodes: usize,
     dim: usize,
-    weights: Vec<f64>,
+    iter_weights: Vec<f64>,
     seed: Option<u64>,
 ) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let src = sources.as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("sources must be contiguous: {e}")))?;
+    let dst = targets.as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("targets must be contiguous: {e}")))?;
+    let wts = edge_weights.as_slice()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("edge_weights must be contiguous: {e}")))?;
+
+    // Build adjacency list from COO arrays — one native pass, no Python objects
+    let mut adj_list: Vec<Vec<(usize, f64)>> = vec![Vec::new(); num_nodes];
+    for i in 0..src.len() {
+        let s = src[i] as usize;
+        let t = dst[i] as usize;
+        let w = wts[i];
+        if s >= num_nodes || t >= num_nodes {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Edge ({s}, {t}) out of bounds for num_nodes={num_nodes}")
+            ));
+        }
+        adj_list[s].push((t, w));
+    }
+
     let builder = FastRPBuilder::new(dim)
-        .with_weights(weights);
+        .with_weights(iter_weights);
     let builder = if let Some(s) = seed {
         builder.with_seed(s)
     } else {
         builder
     };
 
-    let result = builder.fit_adj_list(adj_list)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    
+    let result = py.detach(|| {
+        builder.fit_adj_list(adj_list)
+    })
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
     Ok(result.into_pyarray(py))
 }
 

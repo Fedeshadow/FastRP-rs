@@ -3,7 +3,7 @@ use rand::Rng;
 use std::time::Instant;
 
 fn main() {
-    let num_nodes = 1_000_000;
+    let num_nodes = 10_000_000;
     let edges_per_node = 10;
     let dim = 128;
     let seed = 42;

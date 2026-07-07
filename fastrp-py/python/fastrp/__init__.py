@@ -3,6 +3,19 @@ from ._rust_core import fit_dense as _fit_dense
 from ._rust_core import fit_csr as _fit_csr
 from ._rust_core import fit_adj_list as _fit_adj_list
 
+from logging import getLogger
+
+logger = getLogger(__name__)
+
+
+# Resolve scipy once at import time — avoid per-call try/except overhead
+try:
+    import scipy.sparse as sp
+    _HAS_SCIPY = True
+except ImportError:
+    sp = None
+    _HAS_SCIPY = False
+
 __all__ = ["fit_dense", "fit_csr", "fit_adj_list", "FastRP"]
 
 def fit_dense(adj_matrix, dim, weights=[0.0, 1.0, 1.0], seed=None):
@@ -54,10 +67,11 @@ def fit_csr(row_ptrs, col_indices, values, num_nodes, dim, weights=[0.0, 1.0, 1.
     embeddings : numpy.ndarray of shape (num_nodes, dim)
         The computed node embeddings.
     """
-    row_ptrs_seq = np.asarray(row_ptrs, dtype=np.uintp).tolist()
-    col_indices_seq = np.asarray(col_indices, dtype=np.uintp).tolist()
-    values_seq = np.asarray(values, dtype=np.float64).tolist()
-    return _fit_csr(row_ptrs_seq, col_indices_seq, values_seq, int(num_nodes), dim, weights, seed)
+    # Pass numpy arrays directly — Rust borrows the buffer zero-copy
+    row_ptrs_arr = np.asarray(row_ptrs, dtype=np.int64)
+    col_indices_arr = np.asarray(col_indices, dtype=np.int64)
+    values_arr = np.asarray(values, dtype=np.float64)
+    return _fit_csr(row_ptrs_arr, col_indices_arr, values_arr, int(num_nodes), dim, weights, seed)
 
 def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
     """
@@ -79,13 +93,22 @@ def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
     embeddings : numpy.ndarray of shape (n_nodes, dim)
         The computed node embeddings.
     """
-    processed_adj_list = []
-    for neighbors in adj_list:
-        processed_neighbors = []
-        for target, weight in neighbors:
-            processed_neighbors.append((int(target), float(weight)))
-        processed_adj_list.append(processed_neighbors)
-    return _fit_adj_list(processed_adj_list, dim, weights, seed)
+    # Build flat COO arrays from the nested adjacency list, then let Rust
+    # reconstruct the adj list from contiguous buffers — avoids PyO3 walking
+    # a nested Python structure with per-element extraction.
+    sources = []
+    targets = []
+    edge_weights = []
+    for src, neighbors in enumerate(adj_list):
+        for tgt, w in neighbors:
+            sources.append(src)
+            targets.append(tgt)
+            edge_weights.append(w)
+    sources_arr = np.array(sources, dtype=np.int64)
+    targets_arr = np.array(targets, dtype=np.int64)
+    edge_weights_arr = np.array(edge_weights, dtype=np.float64)
+    num_nodes = len(adj_list)
+    return _fit_adj_list(sources_arr, targets_arr, edge_weights_arr, num_nodes, dim, weights, seed)
 
 
 class FastRP:
@@ -106,16 +129,13 @@ class FastRP:
         -----------
         X : input graph in one of the following formats:
             - 2D array-like (dense adjacency matrix)
-            - scipy.sparse.csr_matrix
+            - scipy.sparse matrix (any format — non-CSR is auto-converted)
             - list of lists (adjacency list)
         """
-        try:
-            import scipy.sparse as sp
-            is_csr = sp.issparse(X) and getattr(X, 'format', None) == 'csr'
-        except ImportError:
-            is_csr = False
-            
-        if is_csr:
+        if _HAS_SCIPY and sp.issparse(X):
+            if X.format != 'csr':
+                X = X.tocsr()
+            logger.debug("Fitting FastRP from CSR matrix...")
             self.embeddings_ = fit_csr(
                 X.indptr,
                 X.indices,
@@ -127,10 +147,12 @@ class FastRP:
             )
         elif isinstance(X, list) and len(X) > 0 and isinstance(X[0], list):
             if len(X[0]) > 0 and isinstance(X[0][0], (tuple, list)):
+                logger.debug("Fitting FastRP from adjacency list...")
                 self.embeddings_ = fit_adj_list(X, dim=self.dim, weights=self.weights, seed=self.seed)
             else:
                 self.embeddings_ = fit_dense(X, dim=self.dim, weights=self.weights, seed=self.seed)
         else:
+            logger.debug("Fitting FastRP from dense matrix...")
             self.embeddings_ = fit_dense(X, dim=self.dim, weights=self.weights, seed=self.seed)
         return self
         
