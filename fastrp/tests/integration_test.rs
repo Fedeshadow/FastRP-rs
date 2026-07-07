@@ -33,10 +33,8 @@ fn test_fastrp_pipeline() {
     // Construct the normalized adjacency matrix first
     let mut adj_matrix = ndarray::Array2::<f64>::zeros((num_nodes, num_nodes));
     for (i, neighbors) in adj_list.iter().enumerate() {
-        let degree = neighbors.len() as f64;
-        let norm = if degree > 0.0 { 1.0 / degree } else { 0.0 };
-        for &(target, _w) in neighbors {
-            adj_matrix[[i, target]] = norm;
+        for &(target, w) in neighbors {
+            adj_matrix[[i, target]] = w;
         }
     }
     

@@ -86,16 +86,21 @@ pub fn compute_fastrp(
             .and(&csr.row_ptrs[..csr.num_nodes])
             .and(&csr.row_ptrs[1..])
             .par_for_each(|mut next_row, &start, &end| {
-                
-                // 2. Iterate through the node's neighbors
+                // 2. Row-normalize: divide by out-degree to form the transition matrix.
+                //    This keeps embedding magnitudes stable across iterations and matches
+                //    the Ā (row-stochastic) matrix defined in the FastRP paper.
+                let degree = (end - start) as f32;
+                let norm = if degree > 0.0 { 1.0 / degree } else { 0.0 };
+
+                // 3. Iterate through the node's neighbors
                 for edge_idx in start..end {
                     let neighbor = csr.col_indices[edge_idx];
                     let edge_weight = csr.values[edge_idx] as f32;
                     
                     let neighbor_emb = h_curr.row(neighbor);
                     
-                    // 3. BLAS-1 style: next_row += edge_weight * neighbor_emb
-                    next_row.scaled_add(edge_weight, &neighbor_emb);
+                    // 4. BLAS-1 style: next_row += (edge_weight / degree) * neighbor_emb
+                    next_row.scaled_add(edge_weight * norm, &neighbor_emb);
                 }
             });
 

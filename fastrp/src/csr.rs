@@ -11,9 +11,12 @@ pub struct CsrMatrix {
 }
 
 impl CsrMatrix {
-    /// Builds a row-normalized CSR matrix from a node adjacency list.
+    /// Builds a CSR matrix from a node adjacency list.
     /// The input is expected to be a `Vec<Vec<(target_node, weight)>>`, 
     /// where the index is the source node ID.
+    ///
+    /// Raw edge weights are stored as-is; row-normalization is applied
+    /// during the algorithm's SpMM step, not here.
     pub fn build_from_adj_list(adj_list: Vec<Vec<(usize, f64)>>) -> Result<Self, FastRPError> {
         let num_nodes = adj_list.len();
         
@@ -32,12 +35,7 @@ impl CsrMatrix {
         row_ptrs.push(current_ptr);
 
         for neighbors in adj_list {
-            // Degree normalization: 1.0 / degree
-            // For weighted graphs, divide by the sum of out-weights
-            let degree = neighbors.len() as f64;
-            let norm_factor = if degree > 0.0 { 1.0 / degree } else { 0.0 };
-
-            for (target, _weight) in neighbors {
+            for (target, weight) in neighbors {
                 if target >= num_nodes {
                     return Err(FastRPError::ShapeMismatch(format!(
                         "Target node ID {} is out of bounds for graph with {} nodes",
@@ -46,7 +44,7 @@ impl CsrMatrix {
                 }
 
                 col_indices.push(target);
-                values.push(norm_factor); // Store normalized weight
+                values.push(weight); // Store original weight
                 current_ptr += 1;
             }
             row_ptrs.push(current_ptr);

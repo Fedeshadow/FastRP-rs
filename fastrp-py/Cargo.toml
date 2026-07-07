@@ -1,0 +1,15 @@
+[package]
+name = "fastrp-py"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "_rust_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+fastrp = { path = "../fastrp" }
+pyo3 = { version = "0.29.0", features = ["extension-module"] }
+numpy = "0.29.0"
+ndarray = "0.17.2"
