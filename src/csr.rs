@@ -2,6 +2,7 @@ use ndarray::Array2;
 use crate::error::FastRPError;
 
 /// A simple Compressed Sparse Row (CSR) matrix representation.
+#[derive(Debug)]
 pub struct CsrMatrix {
     pub(crate) row_ptrs: Vec<usize>,
     pub(crate) col_indices: Vec<usize>,
@@ -97,6 +98,15 @@ impl CsrMatrix {
     }
 
     /// Builds a CSR matrix directly from raw CSR components.
+    ///
+    /// This method validates structural invariants to guarantee that downstream
+    /// computation cannot panic due to out-of-bounds indexing:
+    /// - `row_ptrs` must have exactly `num_nodes + 1` elements.
+    /// - `row_ptrs[0]` must be `0`.
+    /// - `row_ptrs` must be monotonically non-decreasing.
+    /// - The last element of `row_ptrs` must equal `col_indices.len()`.
+    /// - `col_indices` and `values` must have the same length.
+    /// - Every value in `col_indices` must be less than `num_nodes`.
     pub fn build_from_csr(
         row_ptrs: Vec<usize>,
         col_indices: Vec<usize>,
@@ -114,6 +124,36 @@ impl CsrMatrix {
             return Err(FastRPError::ShapeMismatch(
                 "col_indices and values must have the same length".into(),
             ));
+        }
+        if row_ptrs[0] != 0 {
+            return Err(FastRPError::ShapeMismatch(format!(
+                "row_ptrs[0] must be 0, got {}",
+                row_ptrs[0]
+            )));
+        }
+        // row_ptrs.last() is safe here: we verified len == num_nodes + 1 >= 1
+        if *row_ptrs.last().unwrap() != col_indices.len() {
+            return Err(FastRPError::ShapeMismatch(format!(
+                "row_ptrs last element ({}) must equal col_indices length ({})",
+                row_ptrs.last().unwrap(),
+                col_indices.len()
+            )));
+        }
+        for window in row_ptrs.windows(2) {
+            if window[0] > window[1] {
+                return Err(FastRPError::ShapeMismatch(format!(
+                    "row_ptrs must be monotonically non-decreasing, found {} followed by {}",
+                    window[0], window[1]
+                )));
+            }
+        }
+        for (i, &col) in col_indices.iter().enumerate() {
+            if col >= num_nodes {
+                return Err(FastRPError::ShapeMismatch(format!(
+                    "col_indices[{}] = {} is out of bounds for graph with {} nodes",
+                    i, col, num_nodes
+                )));
+            }
         }
 
         Ok(Self {
