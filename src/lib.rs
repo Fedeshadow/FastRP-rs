@@ -1,4 +1,4 @@
-//! FastRP-rs: A high-performance implementation of the Fast Random Projection algorithm.
+//! FastRP-rs: A high-performance safe implementation of the Fast Random Projection algorithm.
 //!
 //! This library provides an efficient graph embedding generation mechanism.
 //! Internally, it relies exclusively on a memory-efficient Compressed Sparse Row (CSR) matrix
@@ -103,7 +103,9 @@ impl FastRPBuilder {
     ///
     /// This method is the core execution path of the library. All other input formats
     /// are internally converted to a `CsrMatrix` before being processed by this method.
-    pub fn fit_csr(&self, csr: &CsrMatrix) -> Result<Array2<f64>, FastRPError> {
+    ///
+    /// Embeddings are returned as `f32` for improved memory efficiency and SIMD throughput.
+    pub fn fit_csr(&self, csr: &CsrMatrix) -> Result<Array2<f32>, FastRPError> {
         algorithm::compute_fastrp(csr, self.dim, &self.iteration_weights, self.seed)
     }
 
@@ -112,7 +114,9 @@ impl FastRPBuilder {
     /// Internally maps the dense `ndarray::Array2` matrix to a sparse CSR matrix
     /// before computation. This is convenient for small-to-medium graphs, but
     /// may be memory-intensive for large datasets.
-    pub fn fit_dense(&self, adj_matrix: &Array2<f64>) -> Result<Array2<f64>, FastRPError> {
+    ///
+    /// Embeddings are returned as `f32` for improved memory efficiency and SIMD throughput.
+    pub fn fit_dense(&self, adj_matrix: &Array2<f64>) -> Result<Array2<f32>, FastRPError> {
         let csr = CsrMatrix::build_from_dense(adj_matrix)?;
         self.fit_csr(&csr)
     }
@@ -122,13 +126,15 @@ impl FastRPBuilder {
     /// This method allows you to directly pass the internal components of a
     /// Compressed Sparse Row matrix. It's the most efficient way to process
     /// data if it is already in CSR format externally.
+    ///
+    /// Embeddings are returned as `f32` for improved memory efficiency and SIMD throughput.
     pub fn from_csr(
         &self,
         row_ptrs: Vec<usize>,
         col_indices: Vec<usize>,
         values: Vec<f64>,
         num_nodes: usize,
-    ) -> Result<Array2<f64>, FastRPError> {
+    ) -> Result<Array2<f32>, FastRPError> {
         let csr = CsrMatrix::build_from_csr(row_ptrs, col_indices, values, num_nodes)?;
         self.fit_csr(&csr)
     }
@@ -138,10 +144,12 @@ impl FastRPBuilder {
     /// An adjacency list is represented as a `Vec` where each index corresponds
     /// to a node ID, and its value is a list of outgoing edges `(target_node, weight)`.
     /// This format is then internally converted into a memory-efficient CSR matrix.
+    ///
+    /// Embeddings are returned as `f32` for improved memory efficiency and SIMD throughput.
     pub fn fit_adj_list(
         &self,
         adj_list: Vec<Vec<(usize, f64)>>,
-    ) -> Result<Array2<f64>, FastRPError> {
+    ) -> Result<Array2<f32>, FastRPError> {
         let csr = CsrMatrix::build_from_adj_list(adj_list)?;
         self.fit_csr(&csr)
     }

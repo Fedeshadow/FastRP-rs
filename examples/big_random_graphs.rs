@@ -48,7 +48,7 @@ fn main() {
             println!("FastRP computation took: {:?}", fit_duration);
             println!("Embeddings Shape: {:?}", embeddings.shape());
             // Just print a slice of the first row as a sample
-            let sample_slice: Vec<f64> = embeddings
+            let sample_slice: Vec<f32> = embeddings
                 .row(0)
                 .to_slice()
                 .unwrap()
