@@ -1,3 +1,15 @@
+"""
+FastRP-rs: A high-performance safe implementation of the Fast Random Projection algorithm.
+
+References
+----------
+.. [1] Chen, Haochen, Syed Fahad Sultan, Yingtao Tian, Muhao Chen, and
+   Steven Skiena. "Fast and Accurate Network Embeddings via Very Sparse
+   Random Projection." In Proceedings of the 28th ACM International
+   Conference on Information and Knowledge Management, pp. 399-408. 2019.
+   https://doi.org/10.1145/3357384.3357879
+"""
+
 import numpy as np
 from ._rust_core import fit_dense as _fit_dense
 from ._rust_core import fit_csr as _fit_csr
@@ -22,8 +34,8 @@ def fit_dense(adj_matrix, dim, weights=[0.0, 1.0, 1.0], seed=None):
     """
     Compute FastRP embeddings from a dense adjacency matrix.
     
-    Parameters:
-    -----------
+    Parameters
+    ----------
     adj_matrix : array-like of shape (n_nodes, n_nodes)
         The dense adjacency matrix.
     dim : int
@@ -33,10 +45,18 @@ def fit_dense(adj_matrix, dim, weights=[0.0, 1.0, 1.0], seed=None):
     seed : int, optional (default=None)
         Random seed.
         
-    Returns:
-    --------
+    Returns
+    -------
     embeddings : numpy.ndarray of shape (n_nodes, dim)
         The computed node embeddings.
+
+    References
+    ----------
+    .. [1] Chen, Haochen, Syed Fahad Sultan, Yingtao Tian, Muhao Chen, and
+       Steven Skiena. "Fast and Accurate Network Embeddings via Very Sparse
+       Random Projection." In Proceedings of the 28th ACM International
+       Conference on Information and Knowledge Management, pp. 399-408. 2019.
+       https://doi.org/10.1145/3357384.3357879
     """
     adj_matrix = np.asarray(adj_matrix, dtype=np.float64)
     return _fit_dense(adj_matrix, dim, weights, seed)
@@ -45,8 +65,8 @@ def fit_csr(row_ptrs, col_indices, values, num_nodes, dim, weights=[0.0, 1.0, 1.
     """
     Compute FastRP embeddings from Compressed Sparse Row (CSR) matrix components.
     
-    Parameters:
-    -----------
+    Parameters
+    ----------
     row_ptrs : array-like
         The CSR row pointers (indptr).
     col_indices : array-like
@@ -62,10 +82,18 @@ def fit_csr(row_ptrs, col_indices, values, num_nodes, dim, weights=[0.0, 1.0, 1.
     seed : int, optional (default=None)
         Random seed.
         
-    Returns:
-    --------
+    Returns
+    -------
     embeddings : numpy.ndarray of shape (num_nodes, dim)
         The computed node embeddings.
+
+    References
+    ----------
+    .. [1] Chen, Haochen, Syed Fahad Sultan, Yingtao Tian, Muhao Chen, and
+       Steven Skiena. "Fast and Accurate Network Embeddings via Very Sparse
+       Random Projection." In Proceedings of the 28th ACM International
+       Conference on Information and Knowledge Management, pp. 399-408. 2019.
+       https://doi.org/10.1145/3357384.3357879
     """
     # Pass numpy arrays directly — Rust borrows the buffer zero-copy
     row_ptrs_arr = np.asarray(row_ptrs, dtype=np.int64)
@@ -77,8 +105,8 @@ def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
     """
     Compute FastRP embeddings from an adjacency list.
     
-    Parameters:
-    -----------
+    Parameters
+    ----------
     adj_list : list of list of (int, float)
         The adjacency list where adj_list[i] is a list of tuples (neighbor_id, edge_weight).
     dim : int
@@ -88,10 +116,18 @@ def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
     seed : int, optional (default=None)
         Random seed.
         
-    Returns:
-    --------
+    Returns
+    -------
     embeddings : numpy.ndarray of shape (n_nodes, dim)
         The computed node embeddings.
+
+    References
+    ----------
+    .. [1] Chen, Haochen, Syed Fahad Sultan, Yingtao Tian, Muhao Chen, and
+       Steven Skiena. "Fast and Accurate Network Embeddings via Very Sparse
+       Random Projection." In Proceedings of the 28th ACM International
+       Conference on Information and Knowledge Management, pp. 399-408. 2019.
+       https://doi.org/10.1145/3357384.3357879
     """
     # Build flat COO arrays from the nested adjacency list, then let Rust
     # reconstruct the adj list from contiguous buffers — avoids PyO3 walking
@@ -114,6 +150,14 @@ def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
 class FastRP:
     """
     Scikit-learn compatible estimator wrapper for the Fast Random Projection (FastRP) algorithm.
+
+    References
+    ----------
+    .. [1] Chen, Haochen, Syed Fahad Sultan, Yingtao Tian, Muhao Chen, and
+       Steven Skiena. "Fast and Accurate Network Embeddings via Very Sparse
+       Random Projection." In Proceedings of the 28th ACM International
+       Conference on Information and Knowledge Management, pp. 399-408. 2019.
+       https://doi.org/10.1145/3357384.3357879
     """
     def __init__(self, dim, weights=[0.0, 1.0, 1.0], seed=None):
         self.dim = dim
@@ -125,8 +169,8 @@ class FastRP:
         """
         Fit the model using X.
         
-        Parameters:
-        -----------
+        Parameters
+        ----------
         X : input graph in one of the following formats:
             - 2D array-like (dense adjacency matrix)
             - scipy.sparse matrix (any format — non-CSR is auto-converted)
