@@ -1,16 +1,14 @@
 //! FastRP-rs: A high-performance implementation of the Fast Random Projection algorithm.
-//! 
+//!
 //! This library provides two execution paths:
 //! 1. A memory-efficient Compressed Sparse Row (CSR) matrix representation designed for large graphs.
 //! 2. A generalized dense execution path for smaller graphs utilizing standard array multiplication.
 
 pub mod algorithm;
 pub mod csr;
-pub mod dense;
 pub mod error;
 
 pub use csr::CsrMatrix;
-pub use dense::DenseMatrix;
 pub use error::FastRPError;
 
 use ndarray::Array2;
@@ -37,22 +35,43 @@ impl FastRPBuilder {
         self.iteration_weights = weights;
         self
     }
-    
+
     /// Pass a fixed deterministic seed to RNG generation for replicable behavior across runs
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
         self
     }
 
-    /// Execute the FastRP algorithm using the memory-efficient Compressed Sparse Row (CSR) structure.
-    pub fn fit_csr(&self, adj_list: Vec<Vec<(usize, f64)>>) -> Result<Array2<f64>, FastRPError> {
-        let csr = CsrMatrix::build_from_adj_list(adj_list)?;
-        algorithm::compute_fastrp(&csr, self.dim, &self.iteration_weights, self.seed)
+    /// Execute the FastRP algorithm using a pre-built Compressed Sparse Row (CSR) structure.
+    pub fn fit_csr(&self, csr: &CsrMatrix) -> Result<Array2<f64>, FastRPError> {
+        algorithm::compute_fastrp(csr, self.dim, &self.iteration_weights, self.seed)
     }
 
-    /// Execute the FastRP algorithm utilizing a naive Dense Matrix. Prefer `fit_csr` for graphs scaling beyond a thousand nodes.
-    pub fn fit_dense(&self, num_nodes: usize, adj_list: Vec<Vec<(usize, f64)>>) -> Result<Array2<f64>, FastRPError> {
-        let dense = DenseMatrix::build_from_adj_list(num_nodes, adj_list)?;
-        dense::compute_fastrp_dense(&dense, self.dim, &self.iteration_weights, self.seed)
+    /// Execute the FastRP algorithm from a dense adjacency matrix.
+    /// Internally maps the dense matrix to a CSR matrix.
+    pub fn fit_dense(&self, adj_matrix: &Array2<f64>) -> Result<Array2<f64>, FastRPError> {
+        let csr = CsrMatrix::build_from_dense(adj_matrix)?;
+        self.fit_csr(&csr)
+    }
+
+    /// Execute the FastRP algorithm from raw CSR components.
+    pub fn from_csr(
+        &self,
+        row_ptrs: Vec<usize>,
+        col_indices: Vec<usize>,
+        values: Vec<f64>,
+        num_nodes: usize,
+    ) -> Result<Array2<f64>, FastRPError> {
+        let csr = CsrMatrix::build_from_csr(row_ptrs, col_indices, values, num_nodes)?;
+        self.fit_csr(&csr)
+    }
+
+    /// Convenience method to execute the algorithm from an adjacency list format.
+    pub fn fit_adj_list(
+        &self,
+        adj_list: Vec<Vec<(usize, f64)>>,
+    ) -> Result<Array2<f64>, FastRPError> {
+        let csr = CsrMatrix::build_from_adj_list(adj_list)?;
+        self.fit_csr(&csr)
     }
 }

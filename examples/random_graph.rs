@@ -44,9 +44,9 @@ fn main() {
         .with_weights(vec![0.0, 1.0, 1.0]) // 0.0 weight on 0-hop, 1.0 on 1-hop, 1.0 on 2-hop
         .with_seed(seed);
 
-    // Compute embeddings using the CSR (Compressed Sparse Row) method
-    println!("\n--- Computing embeddings using CSR method ---");
-    match builder.fit_csr(adj_list.clone()) {
+    // Compute embeddings using the adjacency list method
+    println!("\n--- Computing embeddings using Adjacency List ---");
+    match builder.fit_adj_list(adj_list.clone()) {
         Ok(embeddings) => {
             println!("CSR Embeddings Shape: {:?}", embeddings.shape());
             println!("Embeddings:\n{}", embeddings);
@@ -58,7 +58,15 @@ fn main() {
 
     // Compute embeddings using the Dense method
     println!("\n--- Computing embeddings using Dense method ---");
-    match builder.fit_dense(num_nodes, adj_list) {
+    let mut adj_matrix = ndarray::Array2::<f64>::zeros((num_nodes, num_nodes));
+    for (i, neighbors) in adj_list.iter().enumerate() {
+        let degree = neighbors.len() as f64;
+        let norm = if degree > 0.0 { 1.0 / degree } else { 0.0 };
+        for &(target, _w) in neighbors {
+            adj_matrix[[i, target]] = norm;
+        }
+    }
+    match builder.fit_dense(&adj_matrix) {
         Ok(embeddings) => {
             println!("Dense Embeddings Shape: {:?}", embeddings.shape());
             println!("Embeddings:\n{}", embeddings);

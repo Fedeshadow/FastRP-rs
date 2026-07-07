@@ -21,9 +21,8 @@ fn test_fastrp_pipeline() {
     
     let builder = FastRPBuilder::new(dim).with_weights(weights).with_seed(42);
     
-    // 1. Run CSR memory-efficient path (preferred for large graphs)
-    // We clone adj_list since the builder consumes it to construct the CSR array.
-    let embeddings_csr = builder.fit_csr(adj_list.clone()).unwrap();
+    // 1. Run CSR memory-efficient path using the adjacency list helper
+    let embeddings_csr = builder.fit_adj_list(adj_list.clone()).unwrap();
     
     // Verify the returned embeddings have the expected shape: N x d
     assert_eq!(embeddings_csr.shape(), &[num_nodes, dim]);
@@ -31,7 +30,17 @@ fn test_fastrp_pipeline() {
     assert!(embeddings_csr.sum() != 0.0);
     
     // 2. Run Dense parallel path (useful for testing or small bounds)
-    let embeddings_dense = builder.fit_dense(num_nodes, adj_list).unwrap();
+    // Construct the normalized adjacency matrix first
+    let mut adj_matrix = ndarray::Array2::<f64>::zeros((num_nodes, num_nodes));
+    for (i, neighbors) in adj_list.iter().enumerate() {
+        let degree = neighbors.len() as f64;
+        let norm = if degree > 0.0 { 1.0 / degree } else { 0.0 };
+        for &(target, _w) in neighbors {
+            adj_matrix[[i, target]] = norm;
+        }
+    }
+    
+    let embeddings_dense = builder.fit_dense(&adj_matrix).unwrap();
     
     assert_eq!(embeddings_dense.shape(), &[num_nodes, dim]);
     assert!(embeddings_dense.sum() != 0.0);
