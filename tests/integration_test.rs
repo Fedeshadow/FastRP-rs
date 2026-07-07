@@ -1,4 +1,4 @@
-use FastRP_rs::FastRPBuilder;
+use fastrp::FastRPBuilder;
 
 #[test]
 fn test_fastrp_pipeline() {
