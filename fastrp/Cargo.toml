@@ -2,6 +2,14 @@
 name = "fastrp"
 version = "0.1.0"
 edition = "2024"
+description = "A high-performance safe implementation of the Fast Random Projection (FastRP) algorithm."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Fedeshadow/FastRP-rs"
+homepage = "https://github.com/Fedeshadow/FastRP-rs"
+documentation = "https://docs.rs/fastrp"
+readme = "README.md"
+keywords = ["fastrp", "graph-embedding", "embedding", "random-projection", "sparse-matrix"]
+categories = ["algorithms", "science", "data-structures"]
 
 [dependencies]
 ndarray = { version = "0.17.2", features = ["rayon"] }

@@ -27,24 +27,82 @@
 //! 3. **Raw CSR Data**: Pass low-level arrays (row pointers, column indices, values) directly for maximum performance.
 //! 4. **Pre-built CsrMatrix**: Utilize the native `CsrMatrix` object directly.
 //!
-//! # Example
+//! # Examples
+//!
+//! Here are examples of how to generate embeddings using each of the three input methods:
+//!
+//! ### 1. Adjacency List (Convenient for general graph structures)
 //!
 //! ```rust
 //! use fastrp::FastRPBuilder;
 //!
-//! // Prepare your graph using an adjacency list
+//! // Represent the graph as a list of outgoing edges: (target_node_id, weight)
 //! let adj_list = vec![
-//!     vec![(1, 1.0), (2, 1.0)], // Node 0 is connected to Node 1 and Node 2
-//!     vec![(0, 1.0)],           // Node 1 is connected to Node 0
-//!     vec![(0, 1.0)],           // Node 2 is connected to Node 0
+//!     vec![(1, 1.0), (2, 1.0)], // Node 0 connects to Node 1 and Node 2
+//!     vec![(0, 1.0)],           // Node 1 connects to Node 0
+//!     vec![(0, 1.0)],           // Node 2 connects to Node 0
 //! ];
 //!
-//! // Configure the FastRPBuilder and generate embeddings
+//! // Configure the builder and generate embeddings
 //! let embeddings = FastRPBuilder::new(128)
 //!     .with_weights(vec![0.0, 0.5, 1.0])
 //!     .with_seed(42)
 //!     .fit_adj_list(adj_list)
 //!     .expect("Failed to compute embeddings");
+//!
+//! assert_eq!(embeddings.nrows(), 3);
+//! assert_eq!(embeddings.ncols(), 128);
+//! ```
+//!
+//! ### 2. Dense Adjacency Matrix (Convenient for small-to-medium datasets)
+//!
+//! ```rust
+//! use fastrp::FastRPBuilder;
+//! use ndarray::array;
+//!
+//! // Represent the graph as a dense 2D adjacency matrix
+//! let adj_matrix = array![
+//!     [0.0, 1.0, 1.0], // Node 0 connects to Node 1 and Node 2
+//!     [1.0, 0.0, 0.0], // Node 1 connects to Node 0
+//!     [1.0, 0.0, 0.0], // Node 2 connects to Node 0
+//! ];
+//!
+//! // Compute embeddings directly from the dense matrix
+//! let embeddings = FastRPBuilder::new(128)
+//!     .with_weights(vec![0.0, 0.5, 1.0])
+//!     .with_seed(42)
+//!     .fit_dense(&adj_matrix)
+//!     .expect("Failed to compute embeddings");
+//!
+//! assert_eq!(embeddings.nrows(), 3);
+//! assert_eq!(embeddings.ncols(), 128);
+//! ```
+//!
+//! ### 3. Compressed Sparse Row (CSR) Format (Most efficient for large-scale graphs)
+//!
+//! You can pass the low-level CSR arrays directly using `from_csr`. This is ideal when
+//! your data source is already stored in a sparse layout (such as scipy sparse matrices
+//! or custom database representations).
+//!
+//! ```rust
+//! use fastrp::FastRPBuilder;
+//!
+//! // Represent the graph using CSR format arrays
+//! // A graph with 3 nodes: Node 0 -> {1, 2}, Node 1 -> {0}, Node 2 -> {0}
+//! let row_ptrs = vec![0, 2, 3, 4];
+//! let col_indices = vec![1, 2, 0, 0];
+//! let values = vec![1.0, 1.0, 1.0, 1.0];
+//! let num_nodes = 3;
+//!
+//! // Generate embeddings using raw CSR inputs
+//! let embeddings = FastRPBuilder::new(128)
+//!     .with_weights(vec![0.0, 0.5, 1.0])
+//!     .with_seed(42)
+//!     .from_csr(row_ptrs, col_indices, values, num_nodes)
+//!     .expect("Failed to compute embeddings");
+//!
+//! assert_eq!(embeddings.nrows(), 3);
+//! assert_eq!(embeddings.ncols(), 128);
 //! ```
 
 pub mod algorithm;
