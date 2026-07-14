@@ -321,113 +321,72 @@ impl CsrMatrix {
         };
 
         // ---------------------------------------------------------
-        // PASS 1: Symbolic Phase (Parallel)
+        // UPPER-BOUND ALLOCATION (replaces full symbolic pass)
         // ---------------------------------------------------------
+        // Instead of a parallel merge pass to compute exact nnz per row,
+        // we use the trivial upper bound: nnz_a(row) + nnz_b(row).
+        // This trades slightly more memory for eliminating an entire
+        // parallel pass over the data. A compaction step at the end
+        // closes any gaps left by cancellations (a + b == 0).
 
-        let mut row_nnz = Vec::new();
-        row_nnz.try_reserve_exact(rows)?;
-        row_nnz.resize(rows, 0_usize);
-
-        row_nnz.par_iter_mut().enumerate().try_for_each(
-            |(i, nnz_count)| -> Result<(), FastRPError> {
-                if i + 1 >= self.row_ptrs.len() || i + 1 >= other.row_ptrs.len() {
-                    return Err(err_oob());
-                }
-                let start_a = self.row_ptrs[i];
-                let end_a = self.row_ptrs[i + 1];
-                let start_b = other.row_ptrs[i];
-                let end_b = other.row_ptrs[i + 1];
-
-                if end_a > self.col_indices.len() || end_a > self.values.len() ||
-                   end_b > other.col_indices.len() || end_b > other.values.len() {
-                    return Err(err_oob());
-                }
-
-                let cols_a = &self.col_indices[start_a..end_a];
-                let cols_b = &other.col_indices[start_b..end_b];
-                let vals_a = &self.values[start_a..end_a];
-                let vals_b = &other.values[start_b..end_b];
-
-                let mut count = 0;
-                let mut ptr_a = 0;
-                let mut ptr_b = 0;
-
-                while ptr_a < cols_a.len() && ptr_b < cols_b.len() {
-                    let col_a = cols_a[ptr_a];
-                    let col_b = cols_b[ptr_b];
-
-                    if col_a < col_b {
-                        count += 1;
-                        ptr_a += 1;
-                    } else if col_b < col_a {
-                        count += 1;
-                        ptr_b += 1;
-                    } else {
-                        let val_a = vals_a[ptr_a];
-                        let val_b = vals_b[ptr_b];
-                        if val_a + val_b != 0.0 {
-                            count += 1;
-                        }
-                        ptr_a += 1;
-                        ptr_b += 1;
-                    }
-                }
-
-                count += cols_a.len() - ptr_a;
-                count += cols_b.len() - ptr_b;
-                *nnz_count = count;
-
-                Ok(())
-            },
-        )?;
-
-        // ---------------------------------------------------------
-        // PREFIX SUM: Build row_ptrs for Matrix C (Sequential)
-        // ---------------------------------------------------------
-
-        let mut row_ptrs_c = Vec::new();
-        row_ptrs_c.try_reserve_exact(rows + 1)?;
-        row_ptrs_c.resize(rows + 1, 0);
-
-        let mut total_nnz = 0;
-        for i in 0..rows {
-            total_nnz += row_nnz[i];
-            row_ptrs_c[i + 1] = total_nnz;
+        if self.row_ptrs.len() < rows + 1 || other.row_ptrs.len() < rows + 1 {
+            return Err(err_oob());
         }
 
-        // ---------------------------------------------------------
-        // PASS 2: Numeric Phase (Parallel)
-        // ---------------------------------------------------------
+        let mut row_ub = vec![0_usize; rows];
+        let mut row_ptrs_ub = vec![0_usize; rows + 1];
 
+        for i in 0..rows {
+            let start_a = self.row_ptrs[i];
+            let end_a = self.row_ptrs[i + 1];
+            let start_b = other.row_ptrs[i];
+            let end_b = other.row_ptrs[i + 1];
+
+            if end_a < start_a || end_b < start_b
+                || end_a > self.col_indices.len()
+                || end_a > self.values.len()
+                || end_b > other.col_indices.len()
+                || end_b > other.values.len()
+            {
+                return Err(err_oob());
+            }
+
+            row_ub[i] = (end_a - start_a) + (end_b - start_b);
+            row_ptrs_ub[i + 1] = row_ptrs_ub[i] + row_ub[i];
+        }
+
+        let total_ub = row_ptrs_ub[rows];
+
+        // Allocate output arrays to upper-bound size
         let mut col_indices_c = Vec::new();
-        col_indices_c.try_reserve_exact(total_nnz)?;
-        col_indices_c.resize(total_nnz, 0_usize);
+        col_indices_c.try_reserve_exact(total_ub)?;
+        col_indices_c.resize(total_ub, 0_usize);
 
         let mut values_c = Vec::new();
-        values_c.try_reserve_exact(total_nnz)?;
-        values_c.resize(total_nnz, 0.0_f64);
+        values_c.try_reserve_exact(total_ub)?;
+        values_c.resize(total_ub, 0.0_f64);
 
-        let mut col_slices = Vec::new();
-        col_slices.try_reserve_exact(rows)?;
-        let mut val_slices = Vec::new();
-        val_slices.try_reserve_exact(rows)?;
+        // Track actual nnz written per row (set by parallel merge)
+        let mut actual_nnz = vec![0_usize; rows];
+
+        // ---------------------------------------------------------
+        // SINGLE MERGE PASS (Parallel)
+        // ---------------------------------------------------------
+        // All bounds were validated in the sequential loop above and
+        // self/other are immutable references, so no re-checks needed.
+
+        // Split output into per-row mutable slices for safe parallel access
+        let mut col_slices = Vec::with_capacity(rows);
+        let mut val_slices = Vec::with_capacity(rows);
 
         let mut rem_cols = &mut col_indices_c[..];
         let mut rem_vals = &mut values_c[..];
 
-        for &nnz in &row_nnz {
-            // Explicit check prevents split_at_mut from ever panicking
-            if nnz > rem_cols.len() || nnz > rem_vals.len() {
-                return Err(FastRPError::ShapeMismatch(
-                    "Internal total nnz mismatch".to_string(),
-                ));
-            }
-            let (c_chunk, c_rest) = rem_cols.split_at_mut(nnz);
-            let (v_chunk, v_rest) = rem_vals.split_at_mut(nnz);
-
+        for &ub in &row_ub {
+            let (c_chunk, c_rest) = rem_cols.split_at_mut(ub);
+            let (v_chunk, v_rest) = rem_vals.split_at_mut(ub);
             col_slices.push(c_chunk);
             val_slices.push(v_chunk);
-
             rem_cols = c_rest;
             rem_vals = v_rest;
         }
@@ -435,20 +394,13 @@ impl CsrMatrix {
         col_slices
             .into_par_iter()
             .zip(val_slices.into_par_iter())
+            .zip(actual_nnz.par_iter_mut())
             .enumerate()
-            .try_for_each(|(i, (col_out, val_out))| -> Result<(), FastRPError> {
-                if i + 1 >= self.row_ptrs.len() || i + 1 >= other.row_ptrs.len() {
-                    return Err(err_oob());
-                }
+            .try_for_each(|(i, ((col_out, val_out), row_actual))| -> Result<(), FastRPError> {
                 let start_a = self.row_ptrs[i];
                 let end_a = self.row_ptrs[i + 1];
                 let start_b = other.row_ptrs[i];
                 let end_b = other.row_ptrs[i + 1];
-
-                if end_a > self.col_indices.len() || end_a > self.values.len() ||
-                   end_b > other.col_indices.len() || end_b > other.values.len() {
-                    return Err(err_oob());
-                }
 
                 let cols_a = &self.col_indices[start_a..end_a];
                 let cols_b = &other.col_indices[start_b..end_b];
@@ -474,10 +426,7 @@ impl CsrMatrix {
                         ptr_b += 1;
                         out_idx += 1;
                     } else {
-                        let val_a = vals_a[ptr_a];
-                        let val_b = vals_b[ptr_b];
-                        let sum = val_a + val_b;
-
+                        let sum = vals_a[ptr_a] + vals_b[ptr_b];
                         if sum != 0.0 {
                             col_out[out_idx] = col_a;
                             val_out[out_idx] = sum;
@@ -488,22 +437,51 @@ impl CsrMatrix {
                     }
                 }
 
-                while ptr_a < cols_a.len() {
-                    col_out[out_idx] = cols_a[ptr_a];
-                    val_out[out_idx] = vals_a[ptr_a];
-                    ptr_a += 1;
-                    out_idx += 1;
-                }
+                // Bulk-copy remaining elements via copy_from_slice
+                // (enables auto-vectorization / memcpy-level performance)
+                let remaining_a = cols_a.len() - ptr_a;
+                col_out[out_idx..out_idx + remaining_a]
+                    .copy_from_slice(&cols_a[ptr_a..]);
+                val_out[out_idx..out_idx + remaining_a]
+                    .copy_from_slice(&vals_a[ptr_a..]);
+                out_idx += remaining_a;
 
-                while ptr_b < cols_b.len() {
-                    col_out[out_idx] = cols_b[ptr_b];
-                    val_out[out_idx] = vals_b[ptr_b];
-                    ptr_b += 1;
-                    out_idx += 1;
-                }
+                let remaining_b = cols_b.len() - ptr_b;
+                col_out[out_idx..out_idx + remaining_b]
+                    .copy_from_slice(&cols_b[ptr_b..]);
+                val_out[out_idx..out_idx + remaining_b]
+                    .copy_from_slice(&vals_b[ptr_b..]);
+                out_idx += remaining_b;
 
+                *row_actual = out_idx;
                 Ok(())
             })?;
+
+        // ---------------------------------------------------------
+        // COMPACT: Build final row_ptrs and close gaps
+        // ---------------------------------------------------------
+
+        let mut row_ptrs_c = vec![0_usize; rows + 1];
+        for i in 0..rows {
+            row_ptrs_c[i + 1] = row_ptrs_c[i] + actual_nnz[i];
+        }
+        let total_nnz = row_ptrs_c[rows];
+
+        // Shift data forward to close gaps left by cancellations.
+        // Since row_ptrs_c[i] <= row_ptrs_ub[i] for all i, copying
+        // forward never overwrites unprocessed source data.
+        for i in 0..rows {
+            let src_start = row_ptrs_ub[i];
+            let dst_start = row_ptrs_c[i];
+            let len = actual_nnz[i];
+            if src_start != dst_start && len > 0 {
+                col_indices_c.copy_within(src_start..src_start + len, dst_start);
+                values_c.copy_within(src_start..src_start + len, dst_start);
+            }
+        }
+
+        col_indices_c.truncate(total_nnz);
+        values_c.truncate(total_nnz);
 
         Ok(CsrMatrix {
             row_ptrs: row_ptrs_c,
