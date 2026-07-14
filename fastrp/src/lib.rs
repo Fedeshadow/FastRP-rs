@@ -105,6 +105,11 @@
 //! assert_eq!(embeddings.ncols(), 128);
 //! ```
 
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::panic)]
+#![deny(unused_must_use)]
+
 pub mod algorithm;
 pub mod csr;
 pub mod error;
