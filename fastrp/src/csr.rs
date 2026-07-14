@@ -302,4 +302,150 @@ impl CsrMatrix {
             num_nodes: n,
         })
     }
+
+    /// Computes `self * other`.
+    ///
+    /// # Assumptions
+    /// Same as before: both matrices square, `self.num_nodes == other.num_nodes`
+    /// (checked below, not assumed), and each matrix's internal CSR invariants
+    /// hold as guaranteed by its constructor (spot-checked via `debug_assert!`).
+    pub fn multiply(&self, other: &Self) -> Result<Self, FastRPError> {
+        if self.num_nodes != other.num_nodes {
+            return Err(FastRPError::ShapeMismatch(format!(
+                "cannot multiply: self has {} nodes but other has {}",
+                self.num_nodes, other.num_nodes
+            )));
+        }
+        debug_assert_eq!(self.row_ptrs.len(), self.num_nodes + 1);
+        debug_assert_eq!(other.row_ptrs.len(), other.num_nodes + 1);
+        debug_assert!(self.col_indices.iter().all(|&c| c < self.num_nodes));
+        debug_assert!(other.col_indices.iter().all(|&c| c < other.num_nodes));
+
+        let num_nodes = self.num_nodes;
+        if num_nodes == 0 {
+            return Ok(Self {
+                row_ptrs: vec![0],
+                col_indices: Vec::new(),
+                values: Vec::new(),
+                num_nodes: 0,
+            });
+        }
+
+        // Split rows into contiguous chunks, one per worker thread. Doing
+        // this ourselves (rather than relying on rayon's default splitting,
+        // or on `map_init`) means we control exactly how many workspaces get
+        // allocated: `num_threads`, not one per task and not one per row.
+        let num_threads = rayon::current_num_threads().max(1);
+        let chunk_len = num_nodes.div_ceil(num_threads);
+
+        let mut chunk_ranges: Vec<(usize, usize)> = Vec::new();
+        chunk_ranges.try_reserve_exact(num_threads)?;
+        let mut start = 0;
+        while start < num_nodes {
+            let end = (start + chunk_len).min(num_nodes);
+            chunk_ranges.push((start, end));
+            start = end;
+        }
+
+        // Allocate one workspace per chunk *here*, sequentially, before any
+        // parallel work starts. This is the only place large (O(num_nodes))
+        // allocations happen, and each one goes through `try_reserve_exact`,
+        // so a failure returns an error instead of aborting the process —
+        // unlike `map_init`, whose `init` closure has no `Result` path.
+        //
+        // `accum`/`marker` are Gustavson's-algorithm dense workspaces (see
+        // prior comments): `marker[j] == i` means "accum[j] already holds a
+        // partial dot product for row i," so no per-row clear is needed.
+        let mut chunks: Vec<(usize, usize, Vec<f64>, Vec<usize>)> = Vec::new();
+        chunks.try_reserve_exact(chunk_ranges.len())?;
+        for (start, end) in chunk_ranges {
+            let mut accum = Vec::new();
+            accum.try_reserve_exact(num_nodes)?;
+            accum.resize(num_nodes, 0.0);
+
+            let mut marker = Vec::new();
+            marker.try_reserve_exact(num_nodes)?;
+            marker.resize(num_nodes, usize::MAX);
+
+            chunks.push((start, end, accum, marker));
+        }
+
+        // Each chunk is processed by exactly one thread, owning its
+        // workspace outright — no Mutex, no atomics, no cross-thread
+        // contention at all.
+        let per_chunk_results: Vec<Vec<(Vec<usize>, Vec<f64>)>> = chunks
+            .into_par_iter()
+            .map(|(start, end, mut accum, mut marker)| -> Result<Vec<(Vec<usize>, Vec<f64>)>, FastRPError> {
+                let mut rows_out = Vec::new();
+                rows_out.try_reserve_exact(end - start)?;
+                let mut touched: Vec<usize> = Vec::new();
+
+                for i in start..end {
+                    touched.clear();
+
+                    for a_idx in self.row_ptrs[i]..self.row_ptrs[i + 1] {
+                        let k = self.col_indices[a_idx];
+                        let a_val = self.values[a_idx];
+
+                        for b_idx in other.row_ptrs[k]..other.row_ptrs[k + 1] {
+                            let j = other.col_indices[b_idx];
+                            let contribution = a_val * other.values[b_idx];
+
+                            if marker[j] == i {
+                                accum[j] += contribution;
+                            } else {
+                                marker[j] = i;
+                                accum[j] = contribution;
+                                touched.push(j);
+                            }
+                        }
+                    }
+
+                    touched.sort_unstable();
+
+                    let mut cols = Vec::new();
+                    cols.try_reserve_exact(touched.len())?;
+                    let mut vals = Vec::new();
+                    vals.try_reserve_exact(touched.len())?;
+                    for &j in touched.iter() {
+                        cols.push(j);
+                        vals.push(accum[j]);
+                    }
+                    rows_out.push((cols, vals));
+                }
+
+                Ok(rows_out)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Sequential stitch, with buffers reserved exactly once up front.
+        let total_nnz: usize = per_chunk_results
+            .iter()
+            .flat_map(|rows| rows.iter())
+            .map(|(cols, _)| cols.len())
+            .sum();
+
+        let mut new_row_ptrs = Vec::new();
+        new_row_ptrs.try_reserve_exact(num_nodes + 1)?;
+        let mut new_col_indices = Vec::new();
+        new_col_indices.try_reserve_exact(total_nnz)?;
+        let mut new_values = Vec::new();
+        new_values.try_reserve_exact(total_nnz)?;
+
+        new_row_ptrs.push(0);
+        for (cols, vals) in per_chunk_results.into_iter().flatten() {
+            new_col_indices.extend(cols);
+            new_values.extend(vals);
+            new_row_ptrs.push(new_col_indices.len());
+        }
+
+        Ok(Self {
+            row_ptrs: new_row_ptrs,
+            col_indices: new_col_indices,
+            values: new_values,
+            num_nodes,
+        })
+    }
+
+    // TODO: add a method that performs let result = m.multiply(&m.transpose());
 }
