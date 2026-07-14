@@ -302,4 +302,210 @@ impl CsrMatrix {
             num_nodes: n,
         })
     }
+
+    pub fn add(&self, other: &CsrMatrix) -> Result<CsrMatrix, FastRPError> {
+        if self.num_nodes != other.num_nodes {
+            return Err(FastRPError::ShapeMismatch(format!(
+                "Dimension mismatch: {} != {}",
+                self.num_nodes, other.num_nodes
+            )));
+        }
+
+        let rows = self.num_nodes;
+
+        // Helper closure to map indexing failures to our error type
+        let err_oob = || {
+            FastRPError::ShapeMismatch(
+                "Matrix structure corrupted: index out of bounds".to_string(),
+            )
+        };
+
+        // ---------------------------------------------------------
+        // PASS 1: Symbolic Phase (Parallel)
+        // ---------------------------------------------------------
+
+        let mut row_nnz = Vec::new();
+        row_nnz.try_reserve_exact(rows)?;
+        for _ in 0..rows {
+            row_nnz.push(0_usize);
+        }
+
+        row_nnz.par_iter_mut().enumerate().try_for_each(
+            |(i, nnz_count)| -> Result<(), FastRPError> {
+                let start_a = *self.row_ptrs.get(i).ok_or_else(err_oob)?;
+                let end_a = *self.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
+                let start_b = *other.row_ptrs.get(i).ok_or_else(err_oob)?;
+                let end_b = *other.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
+
+                let cols_a = self.col_indices.get(start_a..end_a).ok_or_else(err_oob)?;
+                let cols_b = other.col_indices.get(start_b..end_b).ok_or_else(err_oob)?;
+                let vals_a = self.values.get(start_a..end_a).ok_or_else(err_oob)?;
+                let vals_b = other.values.get(start_b..end_b).ok_or_else(err_oob)?;
+
+                let mut count = 0;
+                let mut ptr_a = 0;
+                let mut ptr_b = 0;
+
+                while ptr_a < cols_a.len() && ptr_b < cols_b.len() {
+                    let col_a = *cols_a.get(ptr_a).ok_or_else(err_oob)?;
+                    let col_b = *cols_b.get(ptr_b).ok_or_else(err_oob)?;
+
+                    if col_a < col_b {
+                        count += 1;
+                        ptr_a += 1;
+                    } else if col_b < col_a {
+                        count += 1;
+                        ptr_b += 1;
+                    } else {
+                        let val_a = *vals_a.get(ptr_a).ok_or_else(err_oob)?;
+                        let val_b = *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                        if val_a + val_b != 0.0 {
+                            count += 1;
+                        }
+                        ptr_a += 1;
+                        ptr_b += 1;
+                    }
+                }
+
+                count += cols_a.len() - ptr_a;
+                count += cols_b.len() - ptr_b;
+                *nnz_count = count;
+
+                Ok(())
+            },
+        )?;
+
+        // ---------------------------------------------------------
+        // PREFIX SUM: Build row_ptrs for Matrix C (Sequential)
+        // ---------------------------------------------------------
+
+        let mut row_ptrs_c = Vec::new();
+        row_ptrs_c.try_reserve_exact(rows + 1)?;
+        row_ptrs_c.push(0);
+
+        let mut total_nnz = 0;
+        for &nnz in &row_nnz {
+            total_nnz += nnz;
+            row_ptrs_c.push(total_nnz);
+        }
+
+        // ---------------------------------------------------------
+        // PASS 2: Numeric Phase (Parallel)
+        // ---------------------------------------------------------
+
+        let mut col_indices_c = Vec::new();
+        col_indices_c.try_reserve_exact(total_nnz)?;
+        for _ in 0..total_nnz {
+            col_indices_c.push(0_usize);
+        }
+
+        let mut values_c = Vec::new();
+        values_c.try_reserve_exact(total_nnz)?;
+        for _ in 0..total_nnz {
+            values_c.push(0.0_f64);
+        }
+
+        let mut col_slices = Vec::new();
+        col_slices.try_reserve_exact(rows)?;
+        let mut val_slices = Vec::new();
+        val_slices.try_reserve_exact(rows)?;
+
+        let mut rem_cols = &mut col_indices_c[..];
+        let mut rem_vals = &mut values_c[..];
+
+        for &nnz in &row_nnz {
+            // Explicit check prevents split_at_mut from ever panicking
+            if nnz > rem_cols.len() || nnz > rem_vals.len() {
+                return Err(FastRPError::ShapeMismatch(
+                    "Internal total nnz mismatch".to_string(),
+                ));
+            }
+            let (c_chunk, c_rest) = rem_cols.split_at_mut(nnz);
+            let (v_chunk, v_rest) = rem_vals.split_at_mut(nnz);
+
+            col_slices.push(c_chunk);
+            val_slices.push(v_chunk);
+
+            rem_cols = c_rest;
+            rem_vals = v_rest;
+        }
+
+        col_slices
+            .into_par_iter()
+            .zip(val_slices.into_par_iter())
+            .enumerate()
+            .try_for_each(|(i, (col_out, val_out))| -> Result<(), FastRPError> {
+                let start_a = *self.row_ptrs.get(i).ok_or_else(err_oob)?;
+                let end_a = *self.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
+                let start_b = *other.row_ptrs.get(i).ok_or_else(err_oob)?;
+                let end_b = *other.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
+
+                let cols_a = self.col_indices.get(start_a..end_a).ok_or_else(err_oob)?;
+                let cols_b = other.col_indices.get(start_b..end_b).ok_or_else(err_oob)?;
+                let vals_a = self.values.get(start_a..end_a).ok_or_else(err_oob)?;
+                let vals_b = other.values.get(start_b..end_b).ok_or_else(err_oob)?;
+
+                let mut ptr_a = 0;
+                let mut ptr_b = 0;
+                let mut out_idx = 0;
+
+                while ptr_a < cols_a.len() && ptr_b < cols_b.len() {
+                    let col_a = *cols_a.get(ptr_a).ok_or_else(err_oob)?;
+                    let col_b = *cols_b.get(ptr_b).ok_or_else(err_oob)?;
+
+                    if col_a < col_b {
+                        *col_out.get_mut(out_idx).ok_or_else(err_oob)? = col_a;
+                        *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
+                            *vals_a.get(ptr_a).ok_or_else(err_oob)?;
+                        ptr_a += 1;
+                        out_idx += 1;
+                    } else if col_b < col_a {
+                        *col_out.get_mut(out_idx).ok_or_else(err_oob)? = col_b;
+                        *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
+                            *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                        ptr_b += 1;
+                        out_idx += 1;
+                    } else {
+                        let val_a = *vals_a.get(ptr_a).ok_or_else(err_oob)?;
+                        let val_b = *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                        let sum = val_a + val_b;
+
+                        if sum != 0.0 {
+                            *col_out.get_mut(out_idx).ok_or_else(err_oob)? = col_a;
+                            *val_out.get_mut(out_idx).ok_or_else(err_oob)? = sum;
+                            out_idx += 1;
+                        }
+                        ptr_a += 1;
+                        ptr_b += 1;
+                    }
+                }
+
+                while ptr_a < cols_a.len() {
+                    *col_out.get_mut(out_idx).ok_or_else(err_oob)? =
+                        *cols_a.get(ptr_a).ok_or_else(err_oob)?;
+                    *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
+                        *vals_a.get(ptr_a).ok_or_else(err_oob)?;
+                    ptr_a += 1;
+                    out_idx += 1;
+                }
+
+                while ptr_b < cols_b.len() {
+                    *col_out.get_mut(out_idx).ok_or_else(err_oob)? =
+                        *cols_b.get(ptr_b).ok_or_else(err_oob)?;
+                    *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
+                        *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                    ptr_b += 1;
+                    out_idx += 1;
+                }
+
+                Ok(())
+            })?;
+
+        Ok(CsrMatrix {
+            row_ptrs: row_ptrs_c,
+            col_indices: col_indices_c,
+            values: values_c,
+            num_nodes: self.num_nodes,
+        })
+    }
 }
