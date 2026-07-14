@@ -1,5 +1,8 @@
-use ndarray::Array2;
 use crate::error::FastRPError;
+use ndarray::Array2;
+use rayon::prelude::*;
+
+const PARALLEL_HISTOGRAM_NNZ_THRESHOLD: usize = 100_000;
 
 /// A simple Compressed Sparse Row (CSR) matrix representation.
 #[derive(Debug)]
@@ -11,26 +14,46 @@ pub struct CsrMatrix {
 }
 
 impl CsrMatrix {
+    /// Returns a slice of the row pointers of the matrix.
+    pub fn row_ptrs(&self) -> &[usize] {
+        &self.row_ptrs
+    }
+
+    /// Returns a slice of the column indices of the matrix.
+    pub fn col_indices(&self) -> &[usize] {
+        &self.col_indices
+    }
+
+    /// Returns a slice of the values of the matrix.
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
+    /// Returns the number of nodes (rows/columns) in the matrix.
+    pub fn num_nodes(&self) -> usize {
+        self.num_nodes
+    }
+
     /// Builds a CSR matrix from a node adjacency list.
-    /// The input is expected to be a `Vec<Vec<(target_node, weight)>>`, 
+    /// The input is expected to be a `Vec<Vec<(target_node, weight)>>`,
     /// where the index is the source node ID.
     ///
     /// Raw edge weights are stored as-is; row-normalization is applied
     /// during the algorithm's SpMM step, not here.
     pub fn build_from_adj_list(adj_list: Vec<Vec<(usize, f64)>>) -> Result<Self, FastRPError> {
         let num_nodes = adj_list.len();
-        
+
         let mut row_ptrs = Vec::new();
         row_ptrs.try_reserve_exact(num_nodes + 1)?;
-        
+
         let total_edges: usize = adj_list.iter().map(|n| n.len()).sum();
-        
+
         let mut col_indices = Vec::new();
         col_indices.try_reserve_exact(total_edges)?;
-        
+
         let mut values = Vec::new();
         values.try_reserve_exact(total_edges)?;
-        
+
         let mut current_ptr = 0;
         row_ptrs.push(current_ptr);
 
@@ -50,7 +73,12 @@ impl CsrMatrix {
             row_ptrs.push(current_ptr);
         }
 
-        Ok(Self { row_ptrs, col_indices, values, num_nodes })
+        Ok(Self {
+            row_ptrs,
+            col_indices,
+            values,
+            num_nodes,
+        })
     }
 
     /// Builds a CSR matrix from a dense adjacency matrix.
@@ -58,7 +86,9 @@ impl CsrMatrix {
     pub fn build_from_dense(adj_matrix: &Array2<f64>) -> Result<Self, FastRPError> {
         let (num_nodes, cols) = adj_matrix.dim();
         if num_nodes != cols {
-            return Err(FastRPError::ShapeMismatch("Adjacency matrix must be square".into()));
+            return Err(FastRPError::ShapeMismatch(
+                "Adjacency matrix must be square".into(),
+            ));
         }
 
         let mut row_ptrs = Vec::new();
@@ -74,10 +104,10 @@ impl CsrMatrix {
 
         let mut col_indices = Vec::new();
         col_indices.try_reserve_exact(nnz)?;
-        
+
         let mut values = Vec::new();
         values.try_reserve_exact(nnz)?;
-        
+
         let mut current_ptr = 0;
         row_ptrs.push(current_ptr);
 
@@ -92,7 +122,12 @@ impl CsrMatrix {
             row_ptrs.push(current_ptr);
         }
 
-        Ok(Self { row_ptrs, col_indices, values, num_nodes })
+        Ok(Self {
+            row_ptrs,
+            col_indices,
+            values,
+            num_nodes,
+        })
     }
 
     /// Builds a CSR matrix directly from raw CSR components.
@@ -159,6 +194,112 @@ impl CsrMatrix {
             col_indices,
             values,
             num_nodes,
+        })
+    }
+
+    /// Returns the transpose of this matrix.
+    ///
+    /// # Assumptions
+    /// - The matrix is **square**: `num_nodes` is used as both row and
+    ///   column count, so every entry of `col_indices` is assumed `< num_nodes`.
+    /// - `row_ptrs.len() == num_nodes + 1`, `row_ptrs` is non-decreasing, and
+    ///   `row_ptrs.last() == Some(col_indices.len()) == Some(values.len())`.
+    ///
+    /// Both are guaranteed by `build_from_adj_list`, `build_from_dense`, and
+    /// `build_from_csr` — the only sanctioned ways to construct `Self`. This
+    /// method trusts those invariants rather than re-validating them (see the
+    /// `debug_assert!`s below, which catch violations in debug builds only).
+    /// If `CsrMatrix` fields are ever constructed directly elsewhere in the
+    /// crate, that's the place to fix, not here.
+    ///
+    /// # Errors
+    /// Returns `Err(FastRPError::...)` if any output buffer allocation fails,
+    /// instead of aborting the process (as `vec![0; n]` would on OOM).
+    pub fn transpose(&self) -> Result<Self, FastRPError> {
+        debug_assert_eq!(self.row_ptrs.len(), self.num_nodes + 1);
+        debug_assert_eq!(self.row_ptrs.last().copied(), Some(self.values.len()));
+        debug_assert_eq!(self.col_indices.len(), self.values.len());
+        debug_assert!(self.col_indices.iter().all(|&c| c < self.num_nodes));
+
+        let n = self.num_nodes;
+        let nnz = self.values.len(); // Non zero elements 
+
+        // `counts` plays three roles in sequence: histogram, prefix-sum
+        // (= row_ptrs), then scatter cursor.
+        let mut counts: Vec<usize> = Vec::new();
+        counts.try_reserve_exact(n + 1)?;
+        counts.resize(n + 1, 0);
+
+        // 1. Histogram: nnz per column of the original == row length in the
+        //    transpose. Parallelized above a size threshold; below it, the
+        //    per-thread buffer + reduce merge isn't worth it.
+        if nnz >= PARALLEL_HISTOGRAM_NNZ_THRESHOLD {
+            counts = self
+                .col_indices
+                .par_iter()
+                .fold(
+                    || vec![0usize; n + 1],
+                    |mut local, &col| {
+                        local[col + 1] += 1;
+                        local
+                    },
+                )
+                .reduce(
+                    || vec![0usize; n + 1],
+                    |mut a, b| {
+                        for i in 0..=n {
+                            a[i] += b[i];
+                        }
+                        a
+                    },
+                );
+        } else {
+            for &col in &self.col_indices {
+                counts[col + 1] += 1;
+            }
+        }
+
+        // 2. Prefix sum -> counts[i] becomes the start offset of row i.
+        for i in 0..n {
+            counts[i + 1] += counts[i];
+        }
+
+        // 3. Scatter, using `counts` itself as the moving insertion cursor.
+        //    Serial: each iteration depends on the previous write position
+        //    for that column, so this isn't trivially parallelizable without
+        //    atomics (see note below).
+        let mut new_col_indices: Vec<usize> = Vec::new();
+        new_col_indices.try_reserve_exact(nnz)?;
+        new_col_indices.resize(nnz, 0);
+
+        let mut new_values: Vec<f64> = Vec::new();
+        new_values.try_reserve_exact(nnz)?;
+        new_values.resize(nnz, 0.0);
+
+        for row in 0..n {
+            for idx in self.row_ptrs[row]..self.row_ptrs[row + 1] {
+                let col = self.col_indices[idx];
+                let dest = counts[col];
+                new_col_indices[dest] = row;
+                new_values[dest] = self.values[idx];
+                counts[col] += 1;
+            }
+        }
+
+        // 4. Undo the shift to recover proper row_ptrs (counts[i] currently
+        //    holds what should be counts[i+1]).
+        let mut last = 0;
+        for c in counts.iter_mut() {
+            let prev = *c;
+            *c = last;
+            last = prev;
+        }
+
+        Ok(Self {
+            row_ptrs: counts,
+            col_indices: new_col_indices,
+            values: new_values,
+            num_nodes: n,
         })
     }
 }
