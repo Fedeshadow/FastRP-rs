@@ -326,29 +326,35 @@ impl CsrMatrix {
 
         let mut row_nnz = Vec::new();
         row_nnz.try_reserve_exact(rows)?;
-        for _ in 0..rows {
-            row_nnz.push(0_usize);
-        }
+        row_nnz.resize(rows, 0_usize);
 
         row_nnz.par_iter_mut().enumerate().try_for_each(
             |(i, nnz_count)| -> Result<(), FastRPError> {
-                let start_a = *self.row_ptrs.get(i).ok_or_else(err_oob)?;
-                let end_a = *self.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
-                let start_b = *other.row_ptrs.get(i).ok_or_else(err_oob)?;
-                let end_b = *other.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
+                if i + 1 >= self.row_ptrs.len() || i + 1 >= other.row_ptrs.len() {
+                    return Err(err_oob());
+                }
+                let start_a = self.row_ptrs[i];
+                let end_a = self.row_ptrs[i + 1];
+                let start_b = other.row_ptrs[i];
+                let end_b = other.row_ptrs[i + 1];
 
-                let cols_a = self.col_indices.get(start_a..end_a).ok_or_else(err_oob)?;
-                let cols_b = other.col_indices.get(start_b..end_b).ok_or_else(err_oob)?;
-                let vals_a = self.values.get(start_a..end_a).ok_or_else(err_oob)?;
-                let vals_b = other.values.get(start_b..end_b).ok_or_else(err_oob)?;
+                if end_a > self.col_indices.len() || end_a > self.values.len() ||
+                   end_b > other.col_indices.len() || end_b > other.values.len() {
+                    return Err(err_oob());
+                }
+
+                let cols_a = &self.col_indices[start_a..end_a];
+                let cols_b = &other.col_indices[start_b..end_b];
+                let vals_a = &self.values[start_a..end_a];
+                let vals_b = &other.values[start_b..end_b];
 
                 let mut count = 0;
                 let mut ptr_a = 0;
                 let mut ptr_b = 0;
 
                 while ptr_a < cols_a.len() && ptr_b < cols_b.len() {
-                    let col_a = *cols_a.get(ptr_a).ok_or_else(err_oob)?;
-                    let col_b = *cols_b.get(ptr_b).ok_or_else(err_oob)?;
+                    let col_a = cols_a[ptr_a];
+                    let col_b = cols_b[ptr_b];
 
                     if col_a < col_b {
                         count += 1;
@@ -357,8 +363,8 @@ impl CsrMatrix {
                         count += 1;
                         ptr_b += 1;
                     } else {
-                        let val_a = *vals_a.get(ptr_a).ok_or_else(err_oob)?;
-                        let val_b = *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                        let val_a = vals_a[ptr_a];
+                        let val_b = vals_b[ptr_b];
                         if val_a + val_b != 0.0 {
                             count += 1;
                         }
@@ -381,12 +387,12 @@ impl CsrMatrix {
 
         let mut row_ptrs_c = Vec::new();
         row_ptrs_c.try_reserve_exact(rows + 1)?;
-        row_ptrs_c.push(0);
+        row_ptrs_c.resize(rows + 1, 0);
 
         let mut total_nnz = 0;
-        for &nnz in &row_nnz {
-            total_nnz += nnz;
-            row_ptrs_c.push(total_nnz);
+        for i in 0..rows {
+            total_nnz += row_nnz[i];
+            row_ptrs_c[i + 1] = total_nnz;
         }
 
         // ---------------------------------------------------------
@@ -395,15 +401,11 @@ impl CsrMatrix {
 
         let mut col_indices_c = Vec::new();
         col_indices_c.try_reserve_exact(total_nnz)?;
-        for _ in 0..total_nnz {
-            col_indices_c.push(0_usize);
-        }
+        col_indices_c.resize(total_nnz, 0_usize);
 
         let mut values_c = Vec::new();
         values_c.try_reserve_exact(total_nnz)?;
-        for _ in 0..total_nnz {
-            values_c.push(0.0_f64);
-        }
+        values_c.resize(total_nnz, 0.0_f64);
 
         let mut col_slices = Vec::new();
         col_slices.try_reserve_exact(rows)?;
@@ -435,44 +437,50 @@ impl CsrMatrix {
             .zip(val_slices.into_par_iter())
             .enumerate()
             .try_for_each(|(i, (col_out, val_out))| -> Result<(), FastRPError> {
-                let start_a = *self.row_ptrs.get(i).ok_or_else(err_oob)?;
-                let end_a = *self.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
-                let start_b = *other.row_ptrs.get(i).ok_or_else(err_oob)?;
-                let end_b = *other.row_ptrs.get(i + 1).ok_or_else(err_oob)?;
+                if i + 1 >= self.row_ptrs.len() || i + 1 >= other.row_ptrs.len() {
+                    return Err(err_oob());
+                }
+                let start_a = self.row_ptrs[i];
+                let end_a = self.row_ptrs[i + 1];
+                let start_b = other.row_ptrs[i];
+                let end_b = other.row_ptrs[i + 1];
 
-                let cols_a = self.col_indices.get(start_a..end_a).ok_or_else(err_oob)?;
-                let cols_b = other.col_indices.get(start_b..end_b).ok_or_else(err_oob)?;
-                let vals_a = self.values.get(start_a..end_a).ok_or_else(err_oob)?;
-                let vals_b = other.values.get(start_b..end_b).ok_or_else(err_oob)?;
+                if end_a > self.col_indices.len() || end_a > self.values.len() ||
+                   end_b > other.col_indices.len() || end_b > other.values.len() {
+                    return Err(err_oob());
+                }
+
+                let cols_a = &self.col_indices[start_a..end_a];
+                let cols_b = &other.col_indices[start_b..end_b];
+                let vals_a = &self.values[start_a..end_a];
+                let vals_b = &other.values[start_b..end_b];
 
                 let mut ptr_a = 0;
                 let mut ptr_b = 0;
                 let mut out_idx = 0;
 
                 while ptr_a < cols_a.len() && ptr_b < cols_b.len() {
-                    let col_a = *cols_a.get(ptr_a).ok_or_else(err_oob)?;
-                    let col_b = *cols_b.get(ptr_b).ok_or_else(err_oob)?;
+                    let col_a = cols_a[ptr_a];
+                    let col_b = cols_b[ptr_b];
 
                     if col_a < col_b {
-                        *col_out.get_mut(out_idx).ok_or_else(err_oob)? = col_a;
-                        *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
-                            *vals_a.get(ptr_a).ok_or_else(err_oob)?;
+                        col_out[out_idx] = col_a;
+                        val_out[out_idx] = vals_a[ptr_a];
                         ptr_a += 1;
                         out_idx += 1;
                     } else if col_b < col_a {
-                        *col_out.get_mut(out_idx).ok_or_else(err_oob)? = col_b;
-                        *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
-                            *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                        col_out[out_idx] = col_b;
+                        val_out[out_idx] = vals_b[ptr_b];
                         ptr_b += 1;
                         out_idx += 1;
                     } else {
-                        let val_a = *vals_a.get(ptr_a).ok_or_else(err_oob)?;
-                        let val_b = *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                        let val_a = vals_a[ptr_a];
+                        let val_b = vals_b[ptr_b];
                         let sum = val_a + val_b;
 
                         if sum != 0.0 {
-                            *col_out.get_mut(out_idx).ok_or_else(err_oob)? = col_a;
-                            *val_out.get_mut(out_idx).ok_or_else(err_oob)? = sum;
+                            col_out[out_idx] = col_a;
+                            val_out[out_idx] = sum;
                             out_idx += 1;
                         }
                         ptr_a += 1;
@@ -481,19 +489,15 @@ impl CsrMatrix {
                 }
 
                 while ptr_a < cols_a.len() {
-                    *col_out.get_mut(out_idx).ok_or_else(err_oob)? =
-                        *cols_a.get(ptr_a).ok_or_else(err_oob)?;
-                    *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
-                        *vals_a.get(ptr_a).ok_or_else(err_oob)?;
+                    col_out[out_idx] = cols_a[ptr_a];
+                    val_out[out_idx] = vals_a[ptr_a];
                     ptr_a += 1;
                     out_idx += 1;
                 }
 
                 while ptr_b < cols_b.len() {
-                    *col_out.get_mut(out_idx).ok_or_else(err_oob)? =
-                        *cols_b.get(ptr_b).ok_or_else(err_oob)?;
-                    *val_out.get_mut(out_idx).ok_or_else(err_oob)? =
-                        *vals_b.get(ptr_b).ok_or_else(err_oob)?;
+                    col_out[out_idx] = cols_b[ptr_b];
+                    val_out[out_idx] = vals_b[ptr_b];
                     ptr_b += 1;
                     out_idx += 1;
                 }
