@@ -67,10 +67,19 @@ pub fn compute_fastrp(
     dim: usize,
     iteration_weights: &[f64],
     seed: Option<u64>,
+    undirected: bool,
 ) -> Result<Array2<f32>, FastRPError> {
-    let mut h_curr = initialize_h0(csr.num_nodes, dim, seed)?;
+    let undirected_matrix;
+    let csr_ref = if undirected {
+        undirected_matrix = csr.to_undirected()?;
+        &undirected_matrix
+    } else {
+        csr
+    };
 
-    let capacity = csr
+    let mut h_curr = initialize_h0(csr_ref.num_nodes, dim, seed)?;
+
+    let capacity = csr_ref
         .num_nodes
         .checked_mul(dim)
         .ok_or_else(|| FastRPError::ShapeMismatch("Capacity overflow".into()))?;
@@ -78,13 +87,13 @@ pub fn compute_fastrp(
     let mut vec_final = Vec::new();
     vec_final.try_reserve_exact(capacity)?;
     vec_final.resize(capacity, 0.0f32);
-    let mut final_embeddings = Array2::from_shape_vec((csr.num_nodes, dim), vec_final)
+    let mut final_embeddings = Array2::from_shape_vec((csr_ref.num_nodes, dim), vec_final)
         .map_err(|e| FastRPError::ShapeMismatch(e.to_string()))?;
 
     let mut vec_next = Vec::new();
     vec_next.try_reserve_exact(capacity)?;
     vec_next.resize(capacity, 0.0f32);
-    let mut h_next_storage = Array2::from_shape_vec((csr.num_nodes, dim), vec_next)
+    let mut h_next_storage = Array2::from_shape_vec((csr_ref.num_nodes, dim), vec_next)
         .map_err(|e| FastRPError::ShapeMismatch(e.to_string()))?;
 
     let num_iterations = iteration_weights.len();
@@ -110,8 +119,8 @@ pub fn compute_fastrp(
         h_next_storage.fill(0.0);
 
         Zip::from(h_next_storage.rows_mut())
-            .and(&csr.row_ptrs[..csr.num_nodes])
-            .and(&csr.row_ptrs[1..])
+            .and(&csr_ref.row_ptrs[..csr_ref.num_nodes])
+            .and(&csr_ref.row_ptrs[1..])
             .par_for_each(|mut next_row, &start, &end| {
                 // Row-normalize: divide by out-degree to form the transition matrix.
                 // This keeps embedding magnitudes stable across iterations and matches
@@ -120,8 +129,8 @@ pub fn compute_fastrp(
                 let norm = if degree > 0.0 { 1.0 / degree } else { 0.0 };
 
                 for edge_idx in start..end {
-                    let neighbor = csr.col_indices[edge_idx];
-                    let edge_weight = csr.values[edge_idx] as f32;
+                    let neighbor = csr_ref.col_indices[edge_idx];
+                    let edge_weight = csr_ref.values[edge_idx] as f32;
 
                     let neighbor_emb = h_curr.row(neighbor);
 
@@ -136,3 +145,4 @@ pub fn compute_fastrp(
 
     Ok(final_embeddings)
 }
+

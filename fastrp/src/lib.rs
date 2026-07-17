@@ -138,6 +138,7 @@ pub struct FastRPBuilder {
     dim: usize,
     iteration_weights: Vec<f64>,
     seed: Option<u64>,
+    undirected: bool,
 }
 
 impl FastRPBuilder {
@@ -147,6 +148,7 @@ impl FastRPBuilder {
             dim,
             iteration_weights: vec![0.0, 1.0, 1.0], // Default alpha weights per the original paper recommendations
             seed: None,
+            undirected: true,
         }
     }
 
@@ -162,6 +164,13 @@ impl FastRPBuilder {
         self
     }
 
+    /// Whether to convert the input directed matrix into an undirected matrix (M + M^T) before computing embeddings.
+    /// This is useful if we want to perform FastRP on both incoming and outgoing edges.
+    pub fn with_undirected(mut self, undirected: bool) -> Self {
+        self.undirected = undirected;
+        self
+    }
+
     /// Execute the FastRP algorithm using a pre-built Compressed Sparse Row (CSR) structure.
     ///
     /// This method is the core execution path of the library. All other input formats
@@ -169,7 +178,7 @@ impl FastRPBuilder {
     ///
     /// Embeddings are returned as `f32` for improved memory efficiency and SIMD throughput.
     pub fn fit_csr(&self, csr: &CsrMatrix) -> Result<Array2<f32>, FastRPError> {
-        algorithm::compute_fastrp(csr, self.dim, &self.iteration_weights, self.seed)
+        algorithm::compute_fastrp(csr, self.dim, &self.iteration_weights, self.seed, self.undirected)
     }
 
     /// Execute the FastRP algorithm from a dense adjacency matrix.

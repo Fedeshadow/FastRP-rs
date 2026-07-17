@@ -272,3 +272,74 @@ fn test_random_add_properties() {
     }
 }
 
+#[test]
+fn test_undirected_transformations() {
+    // Construct a directed 3x3 matrix:
+    // Row 0: 1: 1.5, 2: 2.0
+    // Row 1: 0: 3.0
+    // Row 2: (empty)
+    //
+    // Matrix M:
+    // [0.0, 1.5, 2.0]
+    // [3.0, 0.0, 0.0]
+    // [0.0, 0.0, 0.0]
+    //
+    // Transpose M^T:
+    // [0.0, 3.0, 0.0]
+    // [1.5, 0.0, 0.0]
+    // [2.0, 0.0, 0.0]
+    //
+    // M + M^T:
+    // [0.0, 4.5, 2.0]
+    // [4.5, 0.0, 0.0]
+    // [2.0, 0.0, 0.0]
+    //
+    // Expected row_ptrs: [0, 2, 3, 4]
+    // Expected col_indices: [1, 2, 0, 0]
+    // Expected values: [4.5, 2.0, 4.5, 2.0]
+
+    let row_ptrs = vec![0, 2, 3, 3];
+    let col_indices = vec![1, 2, 0];
+    let values = vec![1.5, 2.0, 3.0];
+    let num_nodes = 3;
+
+    let m = CsrMatrix::build_from_csr(row_ptrs, col_indices, values, num_nodes)
+        .expect("Failed to build original CsrMatrix");
+
+    // 1. Test to_undirected() (cloning)
+    let m_undirected_1 = m.to_undirected().expect("Failed to_undirected");
+    let expected_row_ptrs = vec![0, 2, 3, 4];
+    let expected_col_indices = vec![1, 2, 0, 0];
+    let expected_values = vec![4.5, 2.0, 4.5, 2.0];
+
+    assert_eq!(m_undirected_1.num_nodes(), num_nodes);
+    assert_eq!(m_undirected_1.row_ptrs(), expected_row_ptrs);
+    assert_eq!(m_undirected_1.col_indices(), expected_col_indices);
+    assert_eq!(m_undirected_1.values(), expected_values);
+
+    // Verify the original is unchanged
+    assert_eq!(m.num_nodes(), num_nodes);
+    assert_eq!(m.row_ptrs(), &[0, 2, 3, 3]);
+    assert_eq!(m.col_indices(), &[1, 2, 0]);
+    assert_eq!(m.values(), &[1.5, 2.0, 3.0]);
+
+    // 2. Test make_undirected() (in-place)
+    let mut m_mut = CsrMatrix::build_from_csr(vec![0, 2, 3, 3], vec![1, 2, 0], vec![1.5, 2.0, 3.0], num_nodes)
+        .expect("Failed to build mutable CsrMatrix");
+    m_mut.make_undirected().expect("Failed make_undirected");
+    assert_eq!(m_mut.num_nodes(), num_nodes);
+    assert_eq!(m_mut.row_ptrs(), expected_row_ptrs);
+    assert_eq!(m_mut.col_indices(), expected_col_indices);
+    assert_eq!(m_mut.values(), expected_values);
+
+    // 3. Test into_undirected() (consuming)
+    let m_consumed = CsrMatrix::build_from_csr(vec![0, 2, 3, 3], vec![1, 2, 0], vec![1.5, 2.0, 3.0], num_nodes)
+        .expect("Failed to build consumable CsrMatrix");
+    let m_undirected_2 = m_consumed.into_undirected().expect("Failed into_undirected");
+    assert_eq!(m_undirected_2.num_nodes(), num_nodes);
+    assert_eq!(m_undirected_2.row_ptrs(), expected_row_ptrs);
+    assert_eq!(m_undirected_2.col_indices(), expected_col_indices);
+    assert_eq!(m_undirected_2.values(), expected_values);
+}
+
+

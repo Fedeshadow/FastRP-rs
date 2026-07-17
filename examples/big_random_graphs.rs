@@ -37,7 +37,8 @@ fn main() {
     println!("Initializing FastRPBuilder...");
     let builder = FastRPBuilder::new(dim)
         .with_weights(vec![0.0, 1.0, 1.0])
-        .with_seed(seed);
+        .with_seed(seed)
+        .with_undirected(true); // Compute embeddings for undirected version (M + M^T) by default
 
     println!("Computing embeddings using from_csr method...");
     let start_fit = Instant::now();

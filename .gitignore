@@ -170,7 +170,7 @@ celerybeat.pid
 *.rdb
 *.aof
 *.pid
-
+*.zip
 # RabbitMQ
 mnesia/
 rabbitmq/

@@ -30,7 +30,7 @@ except ImportError:
 
 __all__ = ["fit_dense", "fit_csr", "fit_adj_list", "FastRP"]
 
-def fit_dense(adj_matrix, dim, weights=[0.0, 1.0, 1.0], seed=None):
+def fit_dense(adj_matrix, dim, weights=[0.0, 1.0, 1.0], seed=None, undirected=True):
     """
     Compute FastRP embeddings from a dense adjacency matrix.
     
@@ -44,6 +44,8 @@ def fit_dense(adj_matrix, dim, weights=[0.0, 1.0, 1.0], seed=None):
         Iteration weights.
     seed : int, optional (default=None)
         Random seed.
+    undirected : bool, optional (default=True)
+        Whether to convert the matrix to undirected (M + M^T) before processing.
         
     Returns
     -------
@@ -59,9 +61,9 @@ def fit_dense(adj_matrix, dim, weights=[0.0, 1.0, 1.0], seed=None):
        https://doi.org/10.1145/3357384.3357879
     """
     adj_matrix = np.asarray(adj_matrix, dtype=np.float64)
-    return _fit_dense(adj_matrix, dim, weights, seed)
+    return _fit_dense(adj_matrix, dim, weights, seed, undirected)
 
-def fit_csr(row_ptrs, col_indices, values, num_nodes, dim, weights=[0.0, 1.0, 1.0], seed=None):
+def fit_csr(row_ptrs, col_indices, values, num_nodes, dim, weights=[0.0, 1.0, 1.0], seed=None, undirected=True):
     """
     Compute FastRP embeddings from Compressed Sparse Row (CSR) matrix components.
     
@@ -81,6 +83,8 @@ def fit_csr(row_ptrs, col_indices, values, num_nodes, dim, weights=[0.0, 1.0, 1.
         Iteration weights.
     seed : int, optional (default=None)
         Random seed.
+    undirected : bool, optional (default=True)
+        Whether to convert the matrix to undirected (M + M^T) before processing.
         
     Returns
     -------
@@ -99,9 +103,9 @@ def fit_csr(row_ptrs, col_indices, values, num_nodes, dim, weights=[0.0, 1.0, 1.
     row_ptrs_arr = np.asarray(row_ptrs, dtype=np.int64)
     col_indices_arr = np.asarray(col_indices, dtype=np.int64)
     values_arr = np.asarray(values, dtype=np.float64)
-    return _fit_csr(row_ptrs_arr, col_indices_arr, values_arr, int(num_nodes), dim, weights, seed)
+    return _fit_csr(row_ptrs_arr, col_indices_arr, values_arr, int(num_nodes), dim, weights, seed, undirected)
 
-def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
+def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None, undirected=True):
     """
     Compute FastRP embeddings from an adjacency list.
     
@@ -115,6 +119,8 @@ def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
         Iteration weights.
     seed : int, optional (default=None)
         Random seed.
+    undirected : bool, optional (default=True)
+        Whether to convert the matrix to undirected (M + M^T) before processing.
         
     Returns
     -------
@@ -144,7 +150,7 @@ def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None):
     targets_arr = np.array(targets, dtype=np.int64)
     edge_weights_arr = np.array(edge_weights, dtype=np.float64)
     num_nodes = len(adj_list)
-    return _fit_adj_list(sources_arr, targets_arr, edge_weights_arr, num_nodes, dim, weights, seed)
+    return _fit_adj_list(sources_arr, targets_arr, edge_weights_arr, num_nodes, dim, weights, seed, undirected)
 
 
 class FastRP:
@@ -159,10 +165,11 @@ class FastRP:
        Conference on Information and Knowledge Management, pp. 399-408. 2019.
        https://doi.org/10.1145/3357384.3357879
     """
-    def __init__(self, dim, weights=[0.0, 1.0, 1.0], seed=None):
+    def __init__(self, dim, weights=[0.0, 1.0, 1.0], seed=None, undirected=True):
         self.dim = dim
         self.weights = weights
         self.seed = seed
+        self.undirected = undirected
         self.embeddings_ = None
         
     def fit(self, X, y=None):
@@ -187,17 +194,18 @@ class FastRP:
                 X.shape[0],
                 dim=self.dim,
                 weights=self.weights,
-                seed=self.seed
+                seed=self.seed,
+                undirected=self.undirected
             )
         elif isinstance(X, list) and len(X) > 0 and isinstance(X[0], list):
             if len(X[0]) > 0 and isinstance(X[0][0], (tuple, list)):
                 logger.debug("Fitting FastRP from adjacency list...")
-                self.embeddings_ = fit_adj_list(X, dim=self.dim, weights=self.weights, seed=self.seed)
+                self.embeddings_ = fit_adj_list(X, dim=self.dim, weights=self.weights, seed=self.seed, undirected=self.undirected)
             else:
-                self.embeddings_ = fit_dense(X, dim=self.dim, weights=self.weights, seed=self.seed)
+                self.embeddings_ = fit_dense(X, dim=self.dim, weights=self.weights, seed=self.seed, undirected=self.undirected)
         else:
             logger.debug("Fitting FastRP from dense matrix...")
-            self.embeddings_ = fit_dense(X, dim=self.dim, weights=self.weights, seed=self.seed)
+            self.embeddings_ = fit_dense(X, dim=self.dim, weights=self.weights, seed=self.seed, undirected=self.undirected)
         return self
         
     def fit_transform(self, X, y=None):

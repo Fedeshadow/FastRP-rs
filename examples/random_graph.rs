@@ -42,7 +42,8 @@ fn main() {
     // Initialize FastRPBuilder
     let builder = FastRPBuilder::new(dim)
         .with_weights(vec![0.0, 1.0, 1.0]) // 0.0 weight on 0-hop, 1.0 on 1-hop, 1.0 on 2-hop
-        .with_seed(seed);
+        .with_seed(seed)
+        .with_undirected(true); // Compute embeddings for undirected version (M + M^T) by default
 
     // Compute embeddings using the adjacency list method
     println!("\n--- Computing embeddings using Adjacency List ---");

@@ -490,4 +490,34 @@ impl CsrMatrix {
             num_nodes: self.num_nodes,
         })
     }
+
+    /// Converts the matrix to undirected in-place by computing M = M + M^T.
+    ///
+    /// # Errors
+    /// Returns `Err(FastRPError::...)` if memory allocation fails during transpose or addition.
+    pub fn make_undirected(&mut self) -> Result<(), FastRPError> {
+        let transposed = self.transpose()?;
+        let sum = self.add(&transposed)?;
+        *self = sum;
+        Ok(())
+    }
+
+    /// Consumes this matrix and returns the undirected version (M + M^T).
+    ///
+    /// # Errors
+    /// Returns `Err(FastRPError::...)` if memory allocation fails during transpose or addition.
+    pub fn into_undirected(self) -> Result<Self, FastRPError> {
+        let transposed = self.transpose()?;
+        self.add(&transposed)
+    }
+
+    /// Returns a new undirected version (M + M^T) of this matrix by cloning.
+    ///
+    /// # Errors
+    /// Returns `Err(FastRPError::...)` if memory allocation fails during transpose or addition.
+    pub fn to_undirected(&self) -> Result<Self, FastRPError> {
+        let transposed = self.transpose()?;
+        self.add(&transposed)
+    }
 }
+

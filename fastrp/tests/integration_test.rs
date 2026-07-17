@@ -57,3 +57,70 @@ fn test_fastrp_pipeline() {
         }
     }
 }
+
+#[test]
+fn test_fastrp_undirected_flag() {
+    let num_nodes = 3;
+    let dim = 8;
+    let seed = 12345;
+
+    // A simple directed graph where node 0 -> 1 and 0 -> 2, and 1 -> 0.
+    // Matrix M:
+    // [0.0, 1.0, 1.0]
+    // [1.0, 0.0, 0.0]
+    // [0.0, 0.0, 0.0]
+    let row_ptrs = vec![0, 2, 3, 3];
+    let col_indices = vec![1, 2, 0];
+    let values = vec![1.0, 1.0, 1.0];
+
+    // Compute M + M^T manually to get the undirected version.
+    // Transpose M^T:
+    // [0.0, 1.0, 0.0]
+    // [1.0, 0.0, 0.0]
+    // [1.0, 0.0, 0.0]
+    //
+    // M + M^T:
+    // [0.0, 2.0, 1.0]
+    // [2.0, 0.0, 0.0]
+    // [1.0, 0.0, 0.0]
+    //
+    // Row 0: 1: 2.0, 2: 1.0
+    // Row 1: 0: 2.0
+    // Row 2: 0: 1.0
+    let expected_row_ptrs = vec![0, 2, 3, 4];
+    let expected_col_indices = vec![1, 2, 0, 0];
+    let expected_values = vec![2.0, 1.0, 2.0, 1.0];
+
+    let csr_directed = fastrp::CsrMatrix::build_from_csr(row_ptrs, col_indices, values, num_nodes)
+        .expect("Failed to build directed matrix");
+
+    let csr_undirected = fastrp::CsrMatrix::build_from_csr(expected_row_ptrs, expected_col_indices, expected_values, num_nodes)
+        .expect("Failed to build undirected matrix");
+
+    // Run 1: with_undirected(true) on the directed matrix
+    let builder_true = FastRPBuilder::new(dim)
+        .with_seed(seed)
+        .with_undirected(true);
+    let emb_true = builder_true.fit_csr(&csr_directed).expect("Failed to run FastRP with undirected = true");
+
+    // Run 2: with_undirected(false) on the undirected matrix
+    let builder_false = FastRPBuilder::new(dim)
+        .with_seed(seed)
+        .with_undirected(false);
+    let emb_false = builder_false.fit_csr(&csr_undirected).expect("Failed to run FastRP on undirected matrix");
+
+    // They should produce identical embeddings!
+    assert_eq!(emb_true.shape(), emb_false.shape());
+    for i in 0..num_nodes {
+        for j in 0..dim {
+            let val_true = emb_true[[i, j]];
+            let val_false = emb_false[[i, j]];
+            assert!(
+                (val_true - val_false).abs() < 1e-6,
+                "Embedding mismatch at index [{}, {}]: {} vs {}",
+                i, j, val_true, val_false
+            );
+        }
+    }
+}
+
