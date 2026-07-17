@@ -74,39 +74,15 @@ fn fit_csr<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (sources, targets, edge_weights, num_nodes, dim, iter_weights, seed=None, undirected=true))]
+#[pyo3(signature = (adj_list, dim, iter_weights, seed=None, undirected=true))]
 fn fit_adj_list<'py>(
     py: Python<'py>,
-    sources: PyReadonlyArray1<'py, i64>,
-    targets: PyReadonlyArray1<'py, i64>,
-    edge_weights: PyReadonlyArray1<'py, f64>,
-    num_nodes: usize,
+    adj_list: Vec<Vec<(usize, f64)>>,
     dim: usize,
     iter_weights: Vec<f64>,
     seed: Option<u64>,
     undirected: bool,
 ) -> PyResult<Bound<'py, PyArray2<f32>>> {
-    let src = sources.as_slice()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("sources must be contiguous: {e}")))?;
-    let dst = targets.as_slice()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("targets must be contiguous: {e}")))?;
-    let wts = edge_weights.as_slice()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("edge_weights must be contiguous: {e}")))?;
-
-    // Build adjacency list from COO arrays — one native pass, no Python objects
-    let mut adj_list: Vec<Vec<(usize, f64)>> = vec![Vec::new(); num_nodes];
-    for i in 0..src.len() {
-        let s = src[i] as usize;
-        let t = dst[i] as usize;
-        let w = wts[i];
-        if s >= num_nodes || t >= num_nodes {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Edge ({s}, {t}) out of bounds for num_nodes={num_nodes}")
-            ));
-        }
-        adj_list[s].push((t, w));
-    }
-
     let builder = FastRPBuilder::new(dim)
         .with_weights(iter_weights)
         .with_undirected(undirected);
@@ -123,6 +99,7 @@ fn fit_adj_list<'py>(
 
     Ok(result.into_pyarray(py))
 }
+
 
 #[pymodule]
 fn _rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {

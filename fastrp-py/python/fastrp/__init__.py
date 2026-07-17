@@ -135,22 +135,8 @@ def fit_adj_list(adj_list, dim, weights=[0.0, 1.0, 1.0], seed=None, undirected=T
        Conference on Information and Knowledge Management, pp. 399-408. 2019.
        https://doi.org/10.1145/3357384.3357879
     """
-    # Build flat COO arrays from the nested adjacency list, then let Rust
-    # reconstruct the adj list from contiguous buffers — avoids PyO3 walking
-    # a nested Python structure with per-element extraction.
-    sources = []
-    targets = []
-    edge_weights = []
-    for src, neighbors in enumerate(adj_list):
-        for tgt, w in neighbors:
-            sources.append(src)
-            targets.append(tgt)
-            edge_weights.append(w)
-    sources_arr = np.array(sources, dtype=np.int64)
-    targets_arr = np.array(targets, dtype=np.int64)
-    edge_weights_arr = np.array(edge_weights, dtype=np.float64)
-    num_nodes = len(adj_list)
-    return _fit_adj_list(sources_arr, targets_arr, edge_weights_arr, num_nodes, dim, weights, seed, undirected)
+    return _fit_adj_list(adj_list, dim, weights, seed, undirected)
+
 
 
 class FastRP:
