@@ -26,3 +26,7 @@ path = "../examples/random_graph.rs"
 name = "big_random_graphs"
 path = "../examples/big_random_graphs.rs"
 
+[[example]]
+name = "performance_1m_nodes"
+path = "../examples/performance_1m_nodes.rs"
+
