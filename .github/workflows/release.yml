@@ -1,13 +1,10 @@
 name: Release
-
 on:
   release:
     types:
       - published
-
 permissions:
   contents: read
-
 jobs:
   # 1. Publish the pure Rust crate to crates.io
   publish-crate:
@@ -19,30 +16,76 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # Only publish the core crate, not the python wrapper workspace
         run: cargo publish -p fastrp
 
-  # 2. Build Python wheels for all major platforms
-  build-wheels:
-    name: Build Python Wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  # 2a. Linux wheels (glibc), x86_64 + aarch64
+  build-wheels-linux:
+    name: Build Wheels (Linux ${{ matrix.target }})
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v4
-      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: all
-          args: --release --out dist
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --out dist --find-interpreter
           sccache: 'true'
-          
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
+
+  # 2b. Windows wheels, x64 only
+  build-wheels-windows:
+    name: Build Wheels (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          architecture: x64
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist --find-interpreter
+          sccache: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-x64
+          path: dist
+
+  # 2c. macOS wheels, Intel + Apple Silicon
+  build-wheels-macos:
+    name: Build Wheels (macOS ${{ matrix.target }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --find-interpreter
+          sccache: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.target }}
           path: dist
 
   # 3. Build the Source Distribution (sdist)
@@ -51,15 +94,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
-          
-      - name: Upload sdist
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
           path: dist
@@ -67,12 +107,15 @@ jobs:
   # 4. Publish to PyPI
   publish-pypi:
     name: Publish to PyPI
-    needs: [build-wheels, build-sdist]
+    needs:
+      - build-wheels-linux
+      - build-wheels-windows
+      - build-wheels-macos
+      - build-sdist
     runs-on: ubuntu-latest
-    # Required for Trusted Publishing (OIDC)
     environment: pypi
     permissions:
-      id-token: write 
+      id-token: write
       contents: read
     steps:
       - uses: actions/download-artifact@v4
@@ -80,7 +123,6 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-          
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
