@@ -1,6 +1,8 @@
 """
 FastRP-rs: A high-performance safe implementation of the Fast Random Projection algorithm.
 
+> **Note**: This is an independent implementation and is not the official implementation of the paper's authors.
+
 References
 ----------
 .. [1] Chen, Haochen, Syed Fahad Sultan, Yingtao Tian, Muhao Chen, and

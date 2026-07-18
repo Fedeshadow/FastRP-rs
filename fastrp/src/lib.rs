@@ -6,6 +6,8 @@
 //!
 //! Original Paper: [Fast and Accurate Network Embeddings via Very Sparse Random Projection](https://arxiv.org/abs/1908.11512)
 //!
+//! > **Note**: This is an independent implementation and is not the official implementation of the paper's authors.
+//!
 //! ```bibtex
 //! @inproceedings{chen2019fast,
 //!   title = {Fast and accurate network embeddings via very sparse random projection},

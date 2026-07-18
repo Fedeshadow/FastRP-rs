@@ -10,6 +10,8 @@ A high-performance safe implementation of the **Fast Random Projection (FastRP)*
 
 Original Paper: [Fast and Accurate Network Embeddings via Very Sparse Random Projection](https://arxiv.org/abs/1908.11512)
 
+> **Note**: This is an independent implementation and is not the official implementation of the paper's authors.
+
 ---
 
 ## Installation
