@@ -9,6 +9,7 @@ jobs:
   # 1. Publish the pure Rust crate to crates.io
   publish-crate:
     name: Publish Rust Crate
+    environment: crates-io
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
