@@ -1,4 +1,4 @@
-use fastrp::FastRPBuilder;
+use fastrp::{FastRPBuilder, CsrMatrix};
 use rand::Rng;
 use std::time::Instant;
 
@@ -41,6 +41,8 @@ fn main() {
         row_ptrs.push(col_indices.len());
     }
 
+    let csr = CsrMatrix::build_from_csr(row_ptrs, col_indices, values, num_nodes).unwrap();
+
     let gen_duration = start_gen.elapsed();
     println!("Graph generation took: {:?}", gen_duration);
 
@@ -52,7 +54,7 @@ fn main() {
         .with_undirected(true);
 
     let start_fit = Instant::now();
-    let _ = builder_csr_undir.from_csr(row_ptrs.clone(), col_indices.clone(), values.clone(), num_nodes).unwrap();
+    let _ = builder_csr_undir.fit_csr(&csr).unwrap();
     println!("Time: {:?}", start_fit.elapsed());
 
     // Test 2: CSR Undirected = False
@@ -63,7 +65,7 @@ fn main() {
         .with_undirected(false);
 
     let start_fit = Instant::now();
-    let _ = builder_csr_dir.from_csr(row_ptrs, col_indices, values, num_nodes).unwrap();
+    let _ = builder_csr_dir.fit_csr(&csr).unwrap();
     println!("Time: {:?}", start_fit.elapsed());
 
     // Test 3: AdjList Undirected = True

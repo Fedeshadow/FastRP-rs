@@ -1,8 +1,6 @@
 use crate::error::FastRPError;
 use ndarray::Array2;
-use rayon::prelude::*;
-
-const PARALLEL_HISTOGRAM_NNZ_THRESHOLD: usize = 100_000;
+use sprs::{CsMat, CsMatView, errors::StructureError};
 
 /// A simple Compressed Sparse Row (CSR) matrix representation.
 #[derive(Debug)]
@@ -32,6 +30,15 @@ impl CsrMatrix {
     /// Returns the number of nodes (rows/columns) in the matrix.
     pub fn num_nodes(&self) -> usize {
         self.num_nodes
+    }
+
+    /// Creates a zero-copy borrowed view of the sparse matrix.
+    /// This verifies structure constraints without allocating memory.
+    pub fn view(&self) -> Result<CsMatView<'_, f64>, StructureError> {
+        let shape = (self.num_nodes, self.num_nodes);
+
+        CsMatView::try_new(shape, &self.row_ptrs, &self.col_indices, &self.values)
+            .map_err(|(_, _, _, err)| err)
     }
 
     /// Builds a CSR matrix from a node adjacency list.
@@ -73,12 +80,14 @@ impl CsrMatrix {
             row_ptrs.push(current_ptr);
         }
 
-        Ok(Self {
+        let mut matrix = Self {
             row_ptrs,
             col_indices,
             values,
             num_nodes,
-        })
+        };
+        matrix.sort_indices();
+        Ok(matrix)
     }
 
     /// Builds a CSR matrix from a dense adjacency matrix.
@@ -189,7 +198,39 @@ impl CsrMatrix {
             }
         }
 
-        Ok(Self {
+        let mut matrix = Self {
+            row_ptrs,
+            col_indices,
+            values,
+            num_nodes,
+        };
+        matrix.sort_indices();
+        Ok(matrix)
+    }
+
+    /// Returns a new undirected version (M + M^T) of this matrix using `sprs`.
+    ///
+    /// # Errors
+    /// Returns `Err(FastRPError::...)` if matrix structure is invalid during addition.
+    pub fn make_undirected(&self) -> Result<CsrMatrix, FastRPError> {
+        // 1. Create a lightweight reference view (Zero allocations)
+        let a_view = self
+            .view()
+            .map_err(|e| FastRPError::ShapeMismatch(format!("Invalid CSR structure: {}", e)))?;
+
+        // 2. Transpose the view
+        // (Creates A^T structure; index allocations are structurally unavoidable here)
+        let a_t = a_view.transpose_view();
+
+        // 3. Compute A + A^T via reference addition
+        // The underlying data values are only read from `self` here
+        let res_mat: CsMat<f64> = &a_view + &a_t;
+
+        // 4. Dismantle the newly produced matrix into your custom struct layout
+        let num_nodes = res_mat.rows();
+        let (row_ptrs, col_indices, values) = res_mat.into_raw_storage();
+
+        Ok(CsrMatrix {
             row_ptrs,
             col_indices,
             values,
@@ -197,327 +238,90 @@ impl CsrMatrix {
         })
     }
 
-    /// Returns the transpose of this matrix.
-    ///
-    /// # Assumptions
-    /// - The matrix is **square**: `num_nodes` is used as both row and
-    ///   column count, so every entry of `col_indices` is assumed `< num_nodes`.
-    /// - `row_ptrs.len() == num_nodes + 1`, `row_ptrs` is non-decreasing, and
-    ///   `row_ptrs.last() == Some(col_indices.len()) == Some(values.len())`.
-    ///
-    /// Both are guaranteed by `build_from_adj_list`, `build_from_dense`, and
-    /// `build_from_csr` — the only sanctioned ways to construct `Self`. This
-    /// method trusts those invariants rather than re-validating them (see the
-    /// `debug_assert!`s below, which catch violations in debug builds only).
-    /// If `CsrMatrix` fields are ever constructed directly elsewhere in the
-    /// crate, that's the place to fix, not here.
-    ///
-    /// # Errors
-    /// Returns `Err(FastRPError::...)` if any output buffer allocation fails,
-    /// instead of aborting the process (as `vec![0; n]` would on OOM).
-    pub fn transpose(&self) -> Result<Self, FastRPError> {
-        debug_assert_eq!(self.row_ptrs.len(), self.num_nodes + 1);
-        debug_assert_eq!(self.row_ptrs.last().copied(), Some(self.values.len()));
-        debug_assert_eq!(self.col_indices.len(), self.values.len());
-        debug_assert!(self.col_indices.iter().all(|&c| c < self.num_nodes));
-
-        let n = self.num_nodes;
-        let nnz = self.values.len(); // Non zero elements 
-
-        // `counts` plays three roles in sequence: histogram, prefix-sum
-        // (= row_ptrs), then scatter cursor.
-        let mut counts: Vec<usize> = Vec::new();
-        counts.try_reserve_exact(n + 1)?;
-        counts.resize(n + 1, 0);
-
-        // 1. Histogram: nnz per column of the original == row length in the
-        //    transpose. Parallelized above a size threshold; below it, the
-        //    per-thread buffer + reduce merge isn't worth it.
-        if nnz >= PARALLEL_HISTOGRAM_NNZ_THRESHOLD {
-            counts = self
-                .col_indices
-                .par_iter()
-                .fold(
-                    || vec![0usize; n + 1],
-                    |mut local, &col| {
-                        local[col + 1] += 1;
-                        local
-                    },
-                )
-                .reduce(
-                    || vec![0usize; n + 1],
-                    |mut a, b| {
-                        for i in 0..=n {
-                            a[i] += b[i];
-                        }
-                        a
-                    },
-                );
-        } else {
-            for &col in &self.col_indices {
-                counts[col + 1] += 1;
-            }
-        }
-
-        // 2. Prefix sum -> counts[i] becomes the start offset of row i.
-        for i in 0..n {
-            counts[i + 1] += counts[i];
-        }
-
-        // 3. Scatter, using `counts` itself as the moving insertion cursor.
-        //    Serial: each iteration depends on the previous write position
-        //    for that column, so this isn't trivially parallelizable without
-        //    atomics (see note below).
-        let mut new_col_indices: Vec<usize> = Vec::new();
-        new_col_indices.try_reserve_exact(nnz)?;
-        new_col_indices.resize(nnz, 0);
-
-        let mut new_values: Vec<f64> = Vec::new();
-        new_values.try_reserve_exact(nnz)?;
-        new_values.resize(nnz, 0.0);
-
-        for row in 0..n {
-            for idx in self.row_ptrs[row]..self.row_ptrs[row + 1] {
-                let col = self.col_indices[idx];
-                let dest = counts[col];
-                new_col_indices[dest] = row;
-                new_values[dest] = self.values[idx];
-                counts[col] += 1;
-            }
-        }
-
-        // 4. Undo the shift to recover proper row_ptrs (counts[i] currently
-        //    holds what should be counts[i+1]).
-        let mut last = 0;
-        for c in counts.iter_mut() {
-            let prev = *c;
-            *c = last;
-            last = prev;
-        }
-
-        Ok(Self {
-            row_ptrs: counts,
-            col_indices: new_col_indices,
-            values: new_values,
-            num_nodes: n,
-        })
-    }
-
-    pub fn add(&self, other: &CsrMatrix) -> Result<CsrMatrix, FastRPError> {
-        if self.num_nodes != other.num_nodes {
-            return Err(FastRPError::ShapeMismatch(format!(
-                "Dimension mismatch: {} != {}",
-                self.num_nodes, other.num_nodes
-            )));
-        }
-
-        let rows = self.num_nodes;
-
-        // Helper closure to map indexing failures to our error type
-        let err_oob = || {
-            FastRPError::ShapeMismatch(
-                "Matrix structure corrupted: index out of bounds".to_string(),
-            )
-        };
-
-        // ---------------------------------------------------------
-        // UPPER-BOUND ALLOCATION (replaces full symbolic pass)
-        // ---------------------------------------------------------
-        // Instead of a parallel merge pass to compute exact nnz per row,
-        // we use the trivial upper bound: nnz_a(row) + nnz_b(row).
-        // This trades slightly more memory for eliminating an entire
-        // parallel pass over the data. A compaction step at the end
-        // closes any gaps left by cancellations (a + b == 0).
-
-        if self.row_ptrs.len() < rows + 1 || other.row_ptrs.len() < rows + 1 {
-            return Err(err_oob());
-        }
-
-        let mut row_ub = vec![0_usize; rows];
-        let mut row_ptrs_ub = vec![0_usize; rows + 1];
-
-        for i in 0..rows {
-            let start_a = self.row_ptrs[i];
-            let end_a = self.row_ptrs[i + 1];
-            let start_b = other.row_ptrs[i];
-            let end_b = other.row_ptrs[i + 1];
-
-            if end_a < start_a || end_b < start_b
-                || end_a > self.col_indices.len()
-                || end_a > self.values.len()
-                || end_b > other.col_indices.len()
-                || end_b > other.values.len()
-            {
-                return Err(err_oob());
-            }
-
-            row_ub[i] = (end_a - start_a) + (end_b - start_b);
-            row_ptrs_ub[i + 1] = row_ptrs_ub[i] + row_ub[i];
-        }
-
-        let total_ub = row_ptrs_ub[rows];
-
-        // Allocate output arrays to upper-bound size
-        let mut col_indices_c = Vec::new();
-        col_indices_c.try_reserve_exact(total_ub)?;
-        col_indices_c.resize(total_ub, 0_usize);
-
-        let mut values_c = Vec::new();
-        values_c.try_reserve_exact(total_ub)?;
-        values_c.resize(total_ub, 0.0_f64);
-
-        // Track actual nnz written per row (set by parallel merge)
-        let mut actual_nnz = vec![0_usize; rows];
-
-        // ---------------------------------------------------------
-        // SINGLE MERGE PASS (Parallel)
-        // ---------------------------------------------------------
-        // All bounds were validated in the sequential loop above and
-        // self/other are immutable references, so no re-checks needed.
-
-        // Split output into per-row mutable slices for safe parallel access
-        let mut col_slices = Vec::with_capacity(rows);
-        let mut val_slices = Vec::with_capacity(rows);
-
-        let mut rem_cols = &mut col_indices_c[..];
-        let mut rem_vals = &mut values_c[..];
-
-        for &ub in &row_ub {
-            let (c_chunk, c_rest) = rem_cols.split_at_mut(ub);
-            let (v_chunk, v_rest) = rem_vals.split_at_mut(ub);
-            col_slices.push(c_chunk);
-            val_slices.push(v_chunk);
-            rem_cols = c_rest;
-            rem_vals = v_rest;
-        }
-
-        col_slices
-            .into_par_iter()
-            .zip(val_slices.into_par_iter())
-            .zip(actual_nnz.par_iter_mut())
-            .enumerate()
-            .try_for_each(|(i, ((col_out, val_out), row_actual))| -> Result<(), FastRPError> {
-                let start_a = self.row_ptrs[i];
-                let end_a = self.row_ptrs[i + 1];
-                let start_b = other.row_ptrs[i];
-                let end_b = other.row_ptrs[i + 1];
-
-                let cols_a = &self.col_indices[start_a..end_a];
-                let cols_b = &other.col_indices[start_b..end_b];
-                let vals_a = &self.values[start_a..end_a];
-                let vals_b = &other.values[start_b..end_b];
-
-                let mut ptr_a = 0;
-                let mut ptr_b = 0;
-                let mut out_idx = 0;
-
-                while ptr_a < cols_a.len() && ptr_b < cols_b.len() {
-                    let col_a = cols_a[ptr_a];
-                    let col_b = cols_b[ptr_b];
-
-                    if col_a < col_b {
-                        col_out[out_idx] = col_a;
-                        val_out[out_idx] = vals_a[ptr_a];
-                        ptr_a += 1;
-                        out_idx += 1;
-                    } else if col_b < col_a {
-                        col_out[out_idx] = col_b;
-                        val_out[out_idx] = vals_b[ptr_b];
-                        ptr_b += 1;
-                        out_idx += 1;
-                    } else {
-                        let sum = vals_a[ptr_a] + vals_b[ptr_b];
-                        if sum != 0.0 {
-                            col_out[out_idx] = col_a;
-                            val_out[out_idx] = sum;
-                            out_idx += 1;
-                        }
-                        ptr_a += 1;
-                        ptr_b += 1;
+    /// Sorts the column indices in each row and sums the weights of duplicate edges.
+    /// This ensures the matrix strictly adheres to CSR structural invariants required
+    /// by downstream algorithms and external crates (like `sprs`).
+    pub fn sort_indices(&mut self) {
+        let mut needs_sort = false;
+        for row in 0..self.num_nodes {
+            let start = self.row_ptrs[row];
+            let end = self.row_ptrs[row + 1];
+            if end > start {
+                for i in start + 1..end {
+                    if self.col_indices[i - 1] >= self.col_indices[i] {
+                        needs_sort = true;
+                        break;
                     }
                 }
-
-                // Bulk-copy remaining elements via copy_from_slice
-                // (enables auto-vectorization / memcpy-level performance)
-                let remaining_a = cols_a.len() - ptr_a;
-                col_out[out_idx..out_idx + remaining_a]
-                    .copy_from_slice(&cols_a[ptr_a..]);
-                val_out[out_idx..out_idx + remaining_a]
-                    .copy_from_slice(&vals_a[ptr_a..]);
-                out_idx += remaining_a;
-
-                let remaining_b = cols_b.len() - ptr_b;
-                col_out[out_idx..out_idx + remaining_b]
-                    .copy_from_slice(&cols_b[ptr_b..]);
-                val_out[out_idx..out_idx + remaining_b]
-                    .copy_from_slice(&vals_b[ptr_b..]);
-                out_idx += remaining_b;
-
-                *row_actual = out_idx;
-                Ok(())
-            })?;
-
-        // ---------------------------------------------------------
-        // COMPACT: Build final row_ptrs and close gaps
-        // ---------------------------------------------------------
-
-        let mut row_ptrs_c = vec![0_usize; rows + 1];
-        for i in 0..rows {
-            row_ptrs_c[i + 1] = row_ptrs_c[i] + actual_nnz[i];
-        }
-        let total_nnz = row_ptrs_c[rows];
-
-        // Shift data forward to close gaps left by cancellations.
-        // Since row_ptrs_c[i] <= row_ptrs_ub[i] for all i, copying
-        // forward never overwrites unprocessed source data.
-        for i in 0..rows {
-            let src_start = row_ptrs_ub[i];
-            let dst_start = row_ptrs_c[i];
-            let len = actual_nnz[i];
-            if src_start != dst_start && len > 0 {
-                col_indices_c.copy_within(src_start..src_start + len, dst_start);
-                values_c.copy_within(src_start..src_start + len, dst_start);
+            }
+            if needs_sort {
+                break;
             }
         }
 
-        col_indices_c.truncate(total_nnz);
-        values_c.truncate(total_nnz);
+        if !needs_sort {
+            return;
+        }
 
-        Ok(CsrMatrix {
-            row_ptrs: row_ptrs_c,
-            col_indices: col_indices_c,
-            values: values_c,
-            num_nodes: self.num_nodes,
-        })
-    }
+        let mut write_idx = 0;
+        let mut new_row_ptrs = Vec::with_capacity(self.num_nodes + 1);
+        new_row_ptrs.push(0);
 
-    /// Converts the matrix to undirected in-place by computing M = M + M^T.
-    ///
-    /// # Errors
-    /// Returns `Err(FastRPError::...)` if memory allocation fails during transpose or addition.
-    pub fn make_undirected(&mut self) -> Result<(), FastRPError> {
-        let transposed = self.transpose()?;
-        let sum = self.add(&transposed)?;
-        *self = sum;
-        Ok(())
-    }
+        let mut row_edges = Vec::new();
 
-    /// Consumes this matrix and returns the undirected version (M + M^T).
-    ///
-    /// # Errors
-    /// Returns `Err(FastRPError::...)` if memory allocation fails during transpose or addition.
-    pub fn into_undirected(self) -> Result<Self, FastRPError> {
-        let transposed = self.transpose()?;
-        self.add(&transposed)
-    }
+        for row in 0..self.num_nodes {
+            let start = self.row_ptrs[row];
+            let end = self.row_ptrs[row + 1];
 
-    /// Returns a new undirected version (M + M^T) of this matrix by cloning.
-    ///
-    /// # Errors
-    /// Returns `Err(FastRPError::...)` if memory allocation fails during transpose or addition.
-    pub fn to_undirected(&self) -> Result<Self, FastRPError> {
-        let transposed = self.transpose()?;
-        self.add(&transposed)
+            row_edges.clear();
+            for i in start..end {
+                row_edges.push((self.col_indices[i], self.values[i]));
+            }
+
+            row_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+            let mut last_col = None;
+            for (col, val) in row_edges.drain(..) {
+                if Some(col) == last_col {
+                    self.values[write_idx - 1] += val;
+                } else {
+                    self.col_indices[write_idx] = col;
+                    self.values[write_idx] = val;
+                    write_idx += 1;
+                    last_col = Some(col);
+                }
+            }
+            new_row_ptrs.push(write_idx);
+        }
+
+        self.row_ptrs = new_row_ptrs;
+        self.col_indices.truncate(write_idx);
+        self.values.truncate(write_idx);
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_undirected_wrong_path() {
+        // Create an invalid CsrMatrix by bypassing the normal constructors
+        let invalid_matrix = CsrMatrix {
+            row_ptrs: vec![0, 1, 3], // Should be length 4 for 3 nodes
+            col_indices: vec![1, 2],
+            values: vec![1.0, 2.0],
+            num_nodes: 3,
+        };
+
+        // make_undirected should fail because view() fails
+        let result = invalid_matrix.make_undirected();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            FastRPError::ShapeMismatch(msg) => {
+                assert!(msg.contains("Invalid CSR structure"));
+            }
+            _ => panic!("Expected ShapeMismatch error"),
+        }
+    }
+}

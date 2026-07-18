@@ -71,7 +71,7 @@ pub fn compute_fastrp(
 ) -> Result<Array2<f32>, FastRPError> {
     let undirected_matrix;
     let csr_ref = if undirected {
-        undirected_matrix = csr.to_undirected()?;
+        undirected_matrix = csr.make_undirected()?;
         &undirected_matrix
     } else {
         csr
