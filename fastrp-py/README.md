@@ -6,7 +6,7 @@ A high-performance, memory-efficient implementation of the Fast Random Projectio
 
 ## Features
 
-- **Blazing Fast**: Core routines are implemented in Rust to maximize performance.
+- **Fast**: Core routines are implemented in Rust to maximize performance.
 - **Scikit-Learn API**: Provides a `FastRP` estimator class that perfectly mimics the scikit-learn API (`fit`, `fit_transform`).
 - **Multiple Input Formats**: Directly ingest dense arrays, adjacency lists, or SciPy sparse matrices.
 - **Zero-Copy CSR Evaluation**: If using SciPy CSR matrices, the graph structure is passed to Rust with zero-copy overhead.
