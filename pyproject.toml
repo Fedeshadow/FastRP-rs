@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "fastrp"
 version = "0.1.0"
 description = "A high-performance safe implementation of the Fast Random Projection (FastRP) algorithm."
-readme = "README.md"
+readme = "fastrp-py/README.md"
 requires-python = ">=3.8"
 authors = [
     { name = "Federico Argilli" }
@@ -38,6 +38,9 @@ Documentation = "https://github.com/Fedeshadow/FastRP-rs"
 [project.optional-dependencies]
 test = [
     "pytest>=7.0",
+    "scipy>=1.5.0",
+]
+sparse = [
     "scipy>=1.5.0",
 ]
 
