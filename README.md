@@ -82,7 +82,7 @@ transformer = FastRP(dim=128, weights=[0.0, 0.5, 1.0], seed=42)
 embeddings = transformer.fit_transform(adj_matrix)
 ```
 
-For more Python usage examples, check out the [python folder](fastrp-py/).
+For more Python usage examples, check out the [python folder](fastrp-py/) and the [examples folder](examples/).
 
 ---
 
