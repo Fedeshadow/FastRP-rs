@@ -173,11 +173,13 @@ impl CsrMatrix {
                 row_ptrs[0]
             )));
         }
-        // row_ptrs.last() is safe here: we verified len == num_nodes + 1 >= 1
-        if *row_ptrs.last().unwrap() != col_indices.len() {
+        let last_ptr = *row_ptrs.last().ok_or_else(|| {
+            FastRPError::ShapeMismatch("row_ptrs cannot be empty".into())
+        })?;
+        if last_ptr != col_indices.len() {
             return Err(FastRPError::ShapeMismatch(format!(
                 "row_ptrs last element ({}) must equal col_indices length ({})",
-                row_ptrs.last().unwrap(),
+                last_ptr,
                 col_indices.len()
             )));
         }
