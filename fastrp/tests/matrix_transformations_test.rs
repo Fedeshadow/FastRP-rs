@@ -1,5 +1,4 @@
 use fastrp::CsrMatrix;
-use rand::{rngs::StdRng, Rng, SeedableRng};
 
 #[test]
 fn test_undirected_transformations_happy_path() {
@@ -51,4 +50,3 @@ fn test_undirected_transformations_happy_path() {
     assert_eq!(m.col_indices(), &[1, 2, 0]);
     assert_eq!(m.values(), &[1.5, 2.0, 3.0]);
 }
-
