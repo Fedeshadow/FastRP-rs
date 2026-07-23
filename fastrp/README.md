@@ -20,7 +20,7 @@ Add `fastrp` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fastrp = "0.1.0"
+fastrp = "0.1.1"
 ```
 
 ---
@@ -94,6 +94,39 @@ let embeddings = FastRPBuilder::new(128)
     .with_weights(vec![0.0, 0.5, 1.0])
     .with_seed(42)
     .from_csr(row_ptrs, col_indices, values, num_nodes)
+    .expect("Failed to compute embeddings");
+
+assert_eq!(embeddings.nrows(), 3);
+assert_eq!(embeddings.ncols(), 128);
+```
+
+### 4. Node Property-Influenced FastRP (Combining Topology & Node Attributes)
+
+Attach a node property feature matrix \(X \in \mathbb{R}^{V \times m}\) to influence the initial projection matrix \(H_0\):
+
+```rust
+use fastrp::FastRPBuilder;
+use ndarray::array;
+
+let adj_list = vec![
+    vec![(1, 1.0), (2, 1.0)],
+    vec![(0, 1.0)],
+    vec![(0, 1.0)],
+];
+
+// 3 nodes, 2 property features each
+let features = array![
+    [1.0, 0.0],
+    [0.0, 1.0],
+    [0.5, 0.5],
+];
+
+let embeddings = FastRPBuilder::new(128)
+    .with_weights(vec![0.0, 0.5, 1.0])
+    .with_node_features(features)
+    .with_feature_weight(1.5)
+    .with_seed(42)
+    .fit_adj_list(adj_list)
     .expect("Failed to compute embeddings");
 
 assert_eq!(embeddings.nrows(), 3);

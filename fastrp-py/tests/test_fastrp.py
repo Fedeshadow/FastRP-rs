@@ -158,3 +158,22 @@ def test_equivalence_across_formats():
     
     assert np.allclose(emb_dense, emb_csr, atol=1e-6)
     assert np.allclose(emb_dense, emb_adj, atol=1e-6)
+
+def test_node_features_python():
+    node_features = np.array([
+        [1.0, 0.0],
+        [0.0, 2.0],
+        [0.5, 0.5],
+    ], dtype=np.float64)
+
+    emb_base = fastrp.fit_dense(ASYMMETRIC_ADJ, dim=8, seed=42)
+    emb_feat = fastrp.fit_dense(ASYMMETRIC_ADJ, dim=8, seed=42, node_features=node_features, feature_weight=1.5)
+
+    assert emb_feat.shape == (3, 8)
+    assert not np.allclose(emb_base, emb_feat)
+
+    # Test via FastRP class
+    model = fastrp.FastRP(dim=8, seed=42, node_features=node_features, feature_weight=1.5)
+    emb_class = model.fit_transform(ASYMMETRIC_ADJ)
+    assert np.allclose(emb_feat, emb_class)
+

@@ -96,6 +96,34 @@ adj_list = [[(1, 1.0), (2, 1.0)], [(0, 1.0)], [(0, 1.0)]]
 embeddings = fastrp.fit_adj_list(adj_list, dim=128)
 ```
 
+### Node Property-Influenced FastRP (Combining Topology & Node Attributes)
+
+Pass a node feature matrix `node_features` to incorporate node properties into the initial random projection matrix $H_0$:
+
+```python
+import numpy as np
+from fastrp import FastRP
+
+adj_matrix = np.array([
+    [0, 1, 1, 0],
+    [1, 0, 1, 1],
+    [1, 1, 0, 0],
+    [0, 1, 0, 0]
+])
+
+# 4 nodes, 3 features per node
+node_features = np.array([
+    [1.0, 0.0, 0.5],
+    [0.0, 1.0, 0.0],
+    [0.5, 0.5, 1.0],
+    [0.0, 0.0, 1.0]
+])
+
+# feature_weight controls the influence of node attributes relative to graph topology
+model = FastRP(dim=128, node_features=node_features, feature_weight=1.5, seed=42)
+embeddings = model.fit_transform(adj_matrix)
+```
+
 ## References
 
 [1] Chen, Haochen, Syed Fahad Sultan, Yingtao Tian, Muhao Chen, and Steven Skiena. "Fast and Accurate Network Embeddings via Very Sparse Random Projection." In *Proceedings of the 28th ACM International Conference on Information and Knowledge Management*, pp. 399-408. 2019. https://doi.org/10.1145/3357384.3357879
