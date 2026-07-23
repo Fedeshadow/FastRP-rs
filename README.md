@@ -29,7 +29,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fastrp = "0.1.0"
+fastrp = "0.1.1"
 ```
 
 ### Quick Example (Adjacency List)

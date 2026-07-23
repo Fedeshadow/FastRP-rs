@@ -58,6 +58,64 @@ pub fn initialize_h0(
     Ok(h0)
 }
 
+/// Initializes the H0 matrix via very sparse random projection, incorporating optional node features.
+///
+/// If `node_features` matrix \(X \in \mathbb{R}^{V \times m}\) is provided:
+/// 1. Generates a feature random projection matrix \(W_{\text{feat}} \in \mathbb{R}^{m \times d}\) using `initialize_h0(m, d, feature_seed)`.
+/// 2. Computes the feature projection \(H_{\text{feat}} = X \cdot W_{\text{feat}}\).
+/// 3. Returns \(H_0 = H_{\text{rand}} + \text{feature\_weight} \cdot H_{\text{feat}}\).
+pub fn initialize_h0_with_features(
+    num_nodes: usize,
+    dim: usize,
+    seed: Option<u64>,
+    node_features: Option<&Array2<f64>>,
+    feature_weight: f64,
+) -> Result<Array2<f32>, FastRPError> {
+    let mut h0 = initialize_h0(num_nodes, dim, seed)?;
+
+    if let Some(features) = node_features {
+        if features.nrows() != num_nodes {
+            return Err(FastRPError::ShapeMismatch(format!(
+                "Node features row count {} does not match graph node count {}",
+                features.nrows(),
+                num_nodes
+            )));
+        }
+
+        let feature_dim = features.ncols();
+        if feature_dim > 0 {
+            // Derive a distinct seed for W_feat if a seed was provided; otherwise pass None for random seed
+            let feat_seed = seed.map(|s| s.wrapping_add(0x9E37_79B9_7F4A_7C15));
+
+            let w_feat = initialize_h0(feature_dim, dim, feat_seed)?;
+            let weight_f32 = feature_weight as f32;
+
+            // Parallel row-wise feature projection and accumulation: H0 += feature_weight * (X * W_feat)
+            h0.axis_iter_mut(Axis(0))
+                .into_par_iter()
+                .enumerate()
+                .for_each(|(i, mut row)| {
+                    let feat_row = features.row(i);
+                    for j in 0..dim {
+                        let mut sum = 0.0f32;
+                        for k in 0..feature_dim {
+                            let feat_val = feat_row[k] as f32;
+                            if feat_val != 0.0 {
+                                let w_val = w_feat[[k, j]];
+                                if w_val != 0.0 {
+                                    sum += feat_val * w_val;
+                                }
+                            }
+                        }
+                        row[j] += weight_f32 * sum;
+                    }
+                });
+        }
+    }
+
+    Ok(h0)
+}
+
 /// Executes parallel SpMM for the FastRP algorithm using the CSR matrix.
 ///
 /// Embeddings are computed in `f32` for reduced memory usage and improved SIMD throughput.
@@ -68,6 +126,8 @@ pub fn compute_fastrp(
     iteration_weights: &[f64],
     seed: Option<u64>,
     undirected: bool,
+    node_features: Option<&Array2<f64>>,
+    feature_weight: f64,
 ) -> Result<Array2<f32>, FastRPError> {
     let undirected_matrix;
     let csr_ref = if undirected {
@@ -77,7 +137,7 @@ pub fn compute_fastrp(
         csr
     };
 
-    let mut h_curr = initialize_h0(csr_ref.num_nodes, dim, seed)?;
+    let mut h_curr = initialize_h0_with_features(csr_ref.num_nodes, dim, seed, node_features, feature_weight)?;
 
     let capacity = csr_ref
         .num_nodes
@@ -145,4 +205,28 @@ pub fn compute_fastrp(
 
     Ok(final_embeddings)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    #[test]
+    fn test_initialize_h0_with_features_none() {
+        let h0 = initialize_h0(4, 8, Some(42)).unwrap();
+        let h0_feat_none = initialize_h0_with_features(4, 8, Some(42), None, 1.0).unwrap();
+        assert_eq!(h0, h0_feat_none);
+    }
+
+    #[test]
+    fn test_initialize_h0_with_features_some() {
+        let features = array![[1.0, 2.0], [3.0, 4.0]];
+        let h0 = initialize_h0_with_features(2, 4, Some(42), Some(&features), 1.0).unwrap();
+        assert_eq!(h0.shape(), &[2, 4]);
+
+        let h0_base = initialize_h0(2, 4, Some(42)).unwrap();
+        assert_ne!(h0, h0_base);
+    }
+}
+
 

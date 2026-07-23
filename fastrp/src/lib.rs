@@ -106,6 +106,39 @@
 //! assert_eq!(embeddings.nrows(), 3);
 //! assert_eq!(embeddings.ncols(), 128);
 //! ```
+//!
+//! ### 4. Node Property-Influenced FastRP (Combining Topology and Node Attributes)
+//!
+//! You can attach a node property feature matrix \(X \in \mathbb{R}^{V \times m}\) to incorporate node attributes into the initial projection matrix \(H_0\):
+//!
+//! ```rust
+//! use fastrp::FastRPBuilder;
+//! use ndarray::array;
+//!
+//! let adj_list = vec![
+//!     vec![(1, 1.0), (2, 1.0)],
+//!     vec![(0, 1.0)],
+//!     vec![(0, 1.0)],
+//! ];
+//!
+//! // 3 nodes, 2 property features each
+//! let features = array![
+//!     [1.0, 0.0],
+//!     [0.0, 1.0],
+//!     [0.5, 0.5],
+//! ];
+//!
+//! let embeddings = FastRPBuilder::new(128)
+//!     .with_weights(vec![0.0, 0.5, 1.0])
+//!     .with_node_features(features)
+//!     .with_feature_weight(1.5)
+//!     .with_seed(42)
+//!     .fit_adj_list(adj_list)
+//!     .expect("Failed to compute embeddings");
+//!
+//! assert_eq!(embeddings.nrows(), 3);
+//! assert_eq!(embeddings.ncols(), 128);
+//! ```
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -116,6 +149,7 @@ pub mod algorithm;
 pub mod csr;
 pub mod error;
 
+pub use algorithm::{initialize_h0, initialize_h0_with_features};
 pub use csr::CsrMatrix;
 pub use error::FastRPError;
 
@@ -141,6 +175,8 @@ pub struct FastRPBuilder {
     iteration_weights: Vec<f64>,
     seed: Option<u64>,
     undirected: bool,
+    node_features: Option<Array2<f64>>,
+    feature_weight: f64,
 }
 
 impl FastRPBuilder {
@@ -151,6 +187,8 @@ impl FastRPBuilder {
             iteration_weights: vec![0.0, 1.0, 1.0], // Default alpha weights per the original paper recommendations
             seed: None,
             undirected: true,
+            node_features: None,
+            feature_weight: 1.0,
         }
     }
 
@@ -173,6 +211,18 @@ impl FastRPBuilder {
         self
     }
 
+    /// Attach node feature / property matrix X (shape: `num_nodes x feature_dim`) to influence H0 initialization.
+    pub fn with_node_features(mut self, features: Array2<f64>) -> Self {
+        self.node_features = Some(features);
+        self
+    }
+
+    /// Set the scaling weight applied to the node feature projection in H0. Default is `1.0`.
+    pub fn with_feature_weight(mut self, weight: f64) -> Self {
+        self.feature_weight = weight;
+        self
+    }
+
     /// Execute the FastRP algorithm using a pre-built Compressed Sparse Row (CSR) structure.
     ///
     /// This method is the core execution path of the library. All other input formats
@@ -180,7 +230,15 @@ impl FastRPBuilder {
     ///
     /// Embeddings are returned as `f32` for improved memory efficiency and SIMD throughput.
     pub fn fit_csr(&self, csr: &CsrMatrix) -> Result<Array2<f32>, FastRPError> {
-        algorithm::compute_fastrp(csr, self.dim, &self.iteration_weights, self.seed, self.undirected)
+        algorithm::compute_fastrp(
+            csr,
+            self.dim,
+            &self.iteration_weights,
+            self.seed,
+            self.undirected,
+            self.node_features.as_ref(),
+            self.feature_weight,
+        )
     }
 
     /// Execute the FastRP algorithm from a dense adjacency matrix.
